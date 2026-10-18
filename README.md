@@ -4,7 +4,7 @@ Tamamen ücretsiz ve cihaz içinde çalışan manga / manhwa / webtoon çevirici
 
 ## Ne yapıyor?
 - **Linkten bölüm çekme:** Bölüm sayfasının linkini yapıştır (ya da tarayıcıdan *Paylaş → ToonÇeviri*). Sayfadaki resimler indirilir.
-- **Galeriden çeviri:** Link çalışmazsa ekran görüntülerini ya da indirdiğin sayfaları seç.
+- **CBZ / ZIP ya da galeriden çeviri:** Arşiv dosyasındaki sayfalar dosya adına göre sıralanır; galeriden de sayfa seçilebilir.
 - **Balon temizleme ve içine yazma:** Yazılar ML Kit ile okunur, balon rengiyle silinir. Çeviri balonun içine sığacak boyutta, ortalanarak yazılır.
 - **Kütüphane ve çevrimdışı okuma:** Çevrilen bölümler cihazda saklanır. Dikey okuyucuda internetsiz okunur, orijinal/çeviri arasında geçiş yapılabilir.
 

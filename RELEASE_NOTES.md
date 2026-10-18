@@ -1,11 +1,11 @@
-## ToonÇeviri 0.13
+## ToonÇeviri 0.14
 
-**Otomatik güncelleme**
-- Uygulama açıldığında ve uygulamaya geri dönüldüğünde, internete bağlıysan GitHub'da yeni sürüm olup olmadığına bakar (en fazla saatte bir).
-- Yeni sürüm varsa arka planda kendiliğinden indirilir. İndirme durumu kütüphanenin üstünde görünür.
-- İndirme bitince yeni sürümde neyin değiştiğini gösteren bir pencere açılır. **Şimdi güncelle** ile tek dokunuşta kurulur.
-- *Sonra* dersen kütüphanenin üstündeki **Güncelle** düğmesiyle istediğin zaman kurabilirsin.
-- Güncellemeden sonraki ilk açılışta "Bu sürümde neler yeni" penceresi gösterilir.
-- **Ayarlar → Güncelleme:** otomatik güncellemeyi açıp kapatabilir, elle denetleyebilir ve şu anki sürümü görebilirsin.
+**CBZ / ZIP dosyasından çeviri**
+- Yeni bölüm ekranında **CBZ / ZIP dosyası aç** düğmesi eklendi.
+- Arşivdeki sayfalar dosya adlarına göre doğal sırayla dizilir (2.jpg, 10.jpg'den önce gelir). Galeriden seçmeye göre sayfa sırası kaymaz.
+- Bir bölümün tamamı tek dokunuşla seçilir; sayfalar orijinal kalitesiyle okunur.
+- `__MACOSX` gibi gereksiz klasörler ve gizli dosyalar atlanır.
+- Başlık yazmazsan bölüm adı dosya adından alınır.
+- Galeriden seçme seçeneği yedek olarak duruyor.
 
-**Not:** Android, Play Store dışından gelen uygulamaların kendini sessizce kurmasına izin vermez. Bu yüzden kurulumu senin onaylaman gerekir. İlk seferde Android, bu uygulamaya "bilinmeyen uygulamaları yükleme" izni vermeni ister.
+**Not:** RAR tabanlı CBR dosyaları henüz desteklenmiyor.

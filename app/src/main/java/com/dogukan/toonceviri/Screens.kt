@@ -350,6 +350,16 @@ fun NewChapterScreen(
         }
     }
 
+    // CBZ / ZIP: bazı dosya yöneticileri .cbz'yi "bilinmeyen tür" olarak gösterdiği için octet-stream de kabul edilir
+    val archivePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
+        if (uri != null) {
+            saveLangs()
+            vm.translateArchive(uri, vm.draftTitle.trim())
+            clearDraft()
+            onStarted()
+        }
+    }
+
     BackHandler(onBack = onBack)
 
     Scaffold(
@@ -433,6 +443,22 @@ fun NewChapterScreen(
 
             OutlinedButton(
                 onClick = {
+                    archivePicker.launch(
+                        arrayOf(
+                            "application/zip",
+                            "application/x-zip-compressed",
+                            "application/vnd.comicbook+zip",
+                            "application/x-cbz",
+                            "application/octet-stream",
+                        )
+                    )
+                },
+                enabled = !sameLang && !missing,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("CBZ / ZIP dosyası aç") }
+
+            TextButton(
+                onClick = {
                     picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                 },
                 enabled = !sameLang && !missing,
@@ -441,7 +467,8 @@ fun NewChapterScreen(
 
             Text(
                 "• Link: bölümün okunduğu sayfanın adresi. Sayfadaki resimler indirilip sırayla çevrilir.\n" +
-                    "• Bazı siteler resimleri JavaScript ile yükler; o zaman ekran görüntüsü alıp galeriden seç.\n" +
+                    "• CBZ / ZIP: sayfalar dosya adlarına göre sıralanır, sıra kaymaz. En güvenilir yol budur.\n" +
+                    "• Bazı siteler resimleri JavaScript ile yükler; o zaman sayfaları indirip CBZ/ZIP yap ya da galeriden seç.\n" +
                     "• Türkçe ve İngilizce hazırdır; diğer diller Ayarlar → Dil modelleri'nden iner.\n" +
                     "• Bitince bölüm, seçtiğin klasöre CBZ olarak da kaydedilir.\n" +
                     "• Çeviri sürerken uygulamayı açık tut.",

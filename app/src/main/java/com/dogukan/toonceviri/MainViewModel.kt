@@ -379,6 +379,58 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---------------- CBZ / ZIP dosyasından çeviri ----------------
+
+    /**
+     * Arşivdeki resimleri dosya adına göre doğal sırayla (2.jpg, 10.jpg'den önce) çevirir.
+     * Sayfa sırası arşivdeki isimlere bağlı olduğu için galeriden seçmeye göre kayma olmaz.
+     */
+    fun translateArchive(uri: Uri, title: String) {
+        val app = getApplication<Application>()
+        val resolver = app.contentResolver
+        val fileName = runCatching {
+            resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+        }.getOrNull()
+        val name = title.ifBlank { fileName?.substringBeforeLast('.')?.trim()?.ifBlank { null } ?: "Arşiv" }
+
+        launchWork(name) {
+            progress(name, 0, 0, "Dosya açılıyor…")
+            // ZipFile rastgele erişim istediği için önce geçici bir kopya alınır
+            val tmp = File(app.cacheDir, "fetch").apply {
+                deleteRecursively()
+                mkdirs()
+            }
+            val copy = File(tmp, "archive.zip")
+            (resolver.openInputStream(uri) ?: throw IllegalStateException("Dosya açılamadı"))
+                .use { input -> copy.outputStream().use { input.copyTo(it) } }
+
+            val zip = try {
+                java.util.zip.ZipFile(copy)
+            } catch (e: Exception) {
+                throw IllegalStateException("Bu dosya CBZ/ZIP değil ya da bozuk (CBR/RAR desteklenmiyor)")
+            }
+            zip.use { z ->
+                val pages = z.entries().asSequence()
+                    .filter { e ->
+                        val n = e.name
+                        val base = n.substringAfterLast('/')
+                        !e.isDirectory &&
+                            !n.startsWith("__MACOSX") && !base.startsWith(".") &&
+                            IMAGE_EXT.any { base.lowercase(Locale.ROOT).endsWith(it) }
+                    }
+                    .sortedWith { a, b -> naturalCompare(a.name, b.name) }
+                    .toList()
+                if (pages.isEmpty()) throw IllegalStateException("Dosyanın içinde resim bulunamadı")
+
+                val loaders: List<() -> Bitmap?> = pages.map { e ->
+                    { z.getInputStream(e).use { it.readBytes() }.let { decode(it) } }
+                }
+                runChapter(name, "arşiv", loaders, existing = null)
+            }
+        }
+    }
+
     private fun naturalCompare(a: String, b: String): Int {
         val re = Regex("\\d+|\\D+")
         val pa = re.findAll(a.lowercase(Locale.ROOT)).map { it.value }.toList()
@@ -508,6 +560,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (saved != null) parts += "$saved kaydedildi"
         if (failed > 0) parts += "$failed balon çevrilemedi"
         msg(parts.joinToString(" · "))
+    }
+
+    companion object {
+        private val IMAGE_EXT = listOf(".jpg", ".jpeg", ".png", ".webp", ".bmp", ".gif", ".avif", ".heic")
     }
 
     private fun decode(bytes: ByteArray): Bitmap? {
