@@ -1,10 +1,14 @@
 package com.dogukan.toonceviri
 
 import android.content.Intent
+import android.content.res.Configuration
+import android.graphics.Color as AndroidColor
+import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.isSystemInDarkTheme
@@ -38,10 +42,19 @@ class MainActivity : ComponentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Açılışta beyaz flaş olmasın: pencere arka planını kayıtlı temaya göre hemen boya
+        window.setBackgroundDrawable(ColorDrawable(startBackground(vm.settings.theme.value.mode)))
         enableEdgeToEdge()
         handleShare(intent)
         setContent {
             val theme by vm.settings.theme.collectAsStateWithLifecycle()
+            val dark = isDark(theme.mode)
+            // Durum ve gezinme çubuğu simgeleri uygulamanın temasına uysun (telefonun temasına değil)
+            LaunchedEffect(dark) {
+                val style = if (dark) SystemBarStyle.dark(AndroidColor.TRANSPARENT)
+                else SystemBarStyle.light(AndroidColor.TRANSPARENT, AndroidColor.TRANSPARENT)
+                enableEdgeToEdge(statusBarStyle = style, navigationBarStyle = style)
+            }
             AppTheme(theme) {
                 Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
                     App(vm)
@@ -53,6 +66,17 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleShare(intent)
+    }
+
+    private fun startBackground(mode: ThemeMode): Int {
+        val systemDark = (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
+            Configuration.UI_MODE_NIGHT_YES
+        return when (mode) {
+            ThemeMode.AMOLED -> AndroidColor.BLACK
+            ThemeMode.DARK -> AndroidColor.rgb(20, 18, 24)
+            ThemeMode.LIGHT -> AndroidColor.WHITE
+            ThemeMode.SYSTEM -> if (systemDark) AndroidColor.rgb(20, 18, 24) else AndroidColor.WHITE
+        }
     }
 
     private fun handleShare(i: Intent?) {
@@ -104,13 +128,16 @@ private fun ColorScheme.amoled(): ColorScheme = copy(
 )
 
 @Composable
+fun isDark(mode: ThemeMode): Boolean = when (mode) {
+    ThemeMode.SYSTEM -> isSystemInDarkTheme()
+    ThemeMode.LIGHT -> false
+    ThemeMode.DARK, ThemeMode.AMOLED -> true
+}
+
+@Composable
 fun AppTheme(t: ThemeSettings, content: @Composable () -> Unit) {
     val ctx = LocalContext.current
-    val dark = when (t.mode) {
-        ThemeMode.SYSTEM -> isSystemInDarkTheme()
-        ThemeMode.LIGHT -> false
-        ThemeMode.DARK, ThemeMode.AMOLED -> true
-    }
+    val dark = isDark(t.mode)
     var scheme = if (t.dynamic && Build.VERSION.SDK_INT >= 31) {
         if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
     } else {
@@ -126,6 +153,8 @@ fun App(vm: MainViewModel) {
     val shared by vm.sharedUrl.collectAsStateWithLifecycle()
     val setupDone by vm.settings.setupDone.collectAsStateWithLifecycle()
     var route by rememberSaveable { mutableStateOf("lib") }
+    // Dil modelleri ekranından geri dönülecek yer (Yeni bölüm ya da Ayarlar)
+    var modelsBack by rememberSaveable { mutableStateOf("settings") }
     val snack = remember { SnackbarHostState() }
 
     // Paylaşılan link gelince doğrudan "Yeni bölüm" ekranını aç
@@ -165,27 +194,34 @@ fun App(vm: MainViewModel) {
                 vm.sharedUrl.value = null
                 route = "lib"
             },
-            onModels = { route = "models" },
+            onModels = {
+                modelsBack = "new"
+                route = "models"
+            },
         )
 
         route == "settings" -> SettingsScreen(
             vm = vm,
             snack = snack,
             onBack = { route = "lib" },
-            onModels = { route = "models" },
+            onModels = {
+                modelsBack = "settings"
+                route = "models"
+            },
         )
 
         route == "models" -> ModelsScreen(
             vm = vm,
             state = state,
             snack = snack,
-            onBack = { route = "settings" },
+            onBack = { route = modelsBack },
         )
 
         route.startsWith("read:") -> ReaderScreen(
             vm = vm,
             state = state,
             id = route.removePrefix("read:"),
+            snack = snack,
             onBack = { route = "lib" },
         )
 

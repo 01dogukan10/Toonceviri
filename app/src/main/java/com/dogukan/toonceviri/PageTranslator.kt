@@ -23,6 +23,7 @@ import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
 import com.google.mlkit.vision.text.latin.TextRecognizerOptions
 import kotlinx.coroutines.tasks.await
 import java.io.Closeable
+import java.util.Locale
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
@@ -49,6 +50,12 @@ class PageTranslator(private val src: String, tgt: String) : Closeable {
 
     private val cjk = src == TranslateLanguage.JAPANESE || src == TranslateLanguage.CHINESE
     private val sep = if (cjk) "" else " "
+    // Türkçe'de I/ı ve İ/i dönüşümü için dile özel kurallar gerekir
+    private val srcLocale: Locale = if (src == TranslateLanguage.TURKISH) Locale("tr") else Locale.ROOT
+
+    /** Bu çevirmenle işlenen sayfalarda çevrilemeyen balon sayısı. */
+    var failedBubbles = 0
+        private set
 
     /** Dil modelini indirir (ilk seferde internet gerekir, sonra çevrimdışı çalışır). */
     suspend fun prepare() {
@@ -56,7 +63,7 @@ class PageTranslator(private val src: String, tgt: String) : Closeable {
     }
 
     private class Block(val rect: Rect, val lines: List<Rect>, val text: String, val thick: Float, val vertical: Boolean)
-    private class Bubble(val rect: Rect, val lines: List<Rect>, val text: String, val thick: Float)
+    private class Bubble(val rect: Rect, val lines: List<Rect>, val text: String, val thick: Float, val vertical: Boolean)
     private class Plan(val bubble: Bubble, val bg: Int, val area: Rect, val text: String)
 
     suspend fun process(page: Bitmap): Bitmap {
@@ -67,7 +74,12 @@ class PageTranslator(private val src: String, tgt: String) : Closeable {
         if (bubbles.isEmpty()) return bmp
 
         val translations = bubbles.map { b ->
-            runCatching { translator.translate(b.text).await() }.getOrDefault("").trim()
+            // Başarısız olursa bir kez daha dene; yine olmazsa balon orijinal haliyle kalır ve sayılır
+            val t = runCatching { translator.translate(b.text).await() }
+                .recoverCatching { translator.translate(b.text).await() }
+                .getOrNull()?.trim().orEmpty()
+            if (t.isEmpty()) failedBubbles++
+            t
         }
 
         val canvas = Canvas(bmp)
@@ -110,7 +122,7 @@ class PageTranslator(private val src: String, tgt: String) : Closeable {
                 val sorted = if (vertical) lineData.sortedByDescending { it.first.right }
                 else lineData.sortedBy { it.first.top }
                 val text = sorted.joinToString(sep) { it.second.trim() }
-                if (text.count { it.isLetter() } < 2) continue // sayfa numarası, tek harfli efektler vb.
+                if (!meaningful(text)) continue // sayfa numarası, tek harfli efektler vb.
 
                 val thick = sorted.map { min(it.first.width(), it.first.height()) }.average().toFloat()
                 out += Block(rect, sorted.map { it.first }, text, thick, vertical)
@@ -150,8 +162,24 @@ class PageTranslator(private val src: String, tgt: String) : Closeable {
                 lines = members.flatMap { it.lines },
                 text = tidy(members.joinToString(sep) { it.text }),
                 thick = members.map { it.thick }.average().toFloat(),
+                vertical = members.any { it.vertical },
             )
         }
+    }
+
+    /**
+     * Gerçek konuşma mı, yoksa sayfa numarası / tek harflik ses efekti mi?
+     * Japonca/Çince'de "嘘" ya da "あ!" gibi tek karakterli konuşmalar da geçerli sayılır;
+     * yalnızca tek bir hece (çoğunlukla çizime ait ses efekti) atlanır.
+     */
+    private fun meaningful(text: String): Boolean {
+        val letters = text.count { it.isLetter() }
+        if (letters >= 2) return true
+        if (!cjk || letters == 0) return false
+        val c = text.first { it.isLetter() }
+        val isKanji = Character.UnicodeScript.of(c.code) == Character.UnicodeScript.HAN
+        val hasPunct = text.any { it in "!?！？…‥" }
+        return isKanji || hasPunct
     }
 
     /** OCR metnini çeviriye hazırlar: satır sonu tirelerini birleştirir, TAMAMI BÜYÜK yazıyı normal yazıya çevirir. */
@@ -160,12 +188,13 @@ class PageTranslator(private val src: String, tgt: String) : Closeable {
         val letters = t.filter { it.isLetter() }
         val mostlyUpper = letters.length >= 4 && letters.count { it.isUpperCase() } > letters.length * 0.8
         if (mostlyUpper) {
-            val sb = StringBuilder(t.lowercase())
+            val sb = StringBuilder(t.lowercase(srcLocale))
             var cap = true
             for (i in sb.indices) {
                 val c = sb[i]
                 if (cap && c.isLetter()) {
-                    sb.setCharAt(i, c.uppercaseChar())
+                    val up = c.toString().uppercase(srcLocale)
+                    if (up.length == 1) sb.setCharAt(i, up[0])
                     cap = false
                 }
                 if (c == '.' || c == '!' || c == '?') cap = true
@@ -191,7 +220,11 @@ class PageTranslator(private val src: String, tgt: String) : Closeable {
         val area = if (uniform >= 0.8f) {
             // Düz renkli balon: bütün yazı alanını boya, sonra balonun içinde büyüyebildiği kadar büyüt
             canvas.drawRect(union, paint)
-            grow(bmp, union, bg, (b.thick * 3).toInt())
+            val grown = grow(bmp, union, bg, (b.thick * 3).toInt(), (b.thick * 3).toInt())
+            // Dikey (Japonca/Çince) balonlar dar ve uzun: yatay yazıya yer açmak için yanlara daha çok genişlet
+            if (b.vertical || grown.width() < grown.height() * 0.6f) {
+                grow(bmp, grown, bg, (b.thick * 10).toInt(), 0)
+            } else grown
         } else {
             // Resmin üstündeki yazı: yalnızca satırları boya, çizimin geri kalanına dokunma
             padded.forEach { canvas.drawRect(it, paint) }
@@ -233,7 +266,7 @@ class PageTranslator(private val src: String, tgt: String) : Closeable {
     }
 
     /** Dikdörtgeni, kenarları balon renginde kaldıkça dışa doğru büyütür → Türkçe uzun metne yer açılır. */
-    private fun grow(bmp: Bitmap, start: Rect, bg: Int, maxGrow: Int): Rect {
+    private fun grow(bmp: Bitmap, start: Rect, bg: Int, maxGrowX: Int, maxGrowY: Int): Rect {
         val out = Rect(start)
         fun colOk(x: Int): Boolean {
             var ok = 0
@@ -258,12 +291,16 @@ class PageTranslator(private val src: String, tgt: String) : Closeable {
             return tot > 0 && ok >= tot * 0.95f
         }
         var g = 0
-        while (g < maxGrow) {
+        while (g < max(maxGrowX, maxGrowY)) {
             var grew = false
-            if (out.left - 1 >= 0 && colOk(out.left - 1)) { out.left--; grew = true }
-            if (out.right < bmp.width && colOk(out.right)) { out.right++; grew = true }
-            if (out.top - 1 >= 0 && rowOk(out.top - 1)) { out.top--; grew = true }
-            if (out.bottom < bmp.height && rowOk(out.bottom)) { out.bottom++; grew = true }
+            if (g < maxGrowX) {
+                if (out.left - 1 >= 0 && colOk(out.left - 1)) { out.left--; grew = true }
+                if (out.right < bmp.width && colOk(out.right)) { out.right++; grew = true }
+            }
+            if (g < maxGrowY) {
+                if (out.top - 1 >= 0 && rowOk(out.top - 1)) { out.top--; grew = true }
+                if (out.bottom < bmp.height && rowOk(out.bottom)) { out.bottom++; grew = true }
+            }
             if (!grew) break
             g++
         }

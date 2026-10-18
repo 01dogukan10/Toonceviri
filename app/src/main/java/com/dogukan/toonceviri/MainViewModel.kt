@@ -6,18 +6,24 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
+import android.provider.OpenableColumns
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.google.mlkit.nl.translate.TranslateLanguage
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import okhttp3.OkHttpClient
 import java.io.File
 import java.text.SimpleDateFormat
@@ -30,6 +36,8 @@ data class WorkState(val title: String, val done: Int, val total: Int, val statu
 data class UiState(
     val chapters: List<Chapter> = emptyList(),
     val work: WorkState? = null,
+    /** Şu an çevrilen bölümün kimliği */
+    val activeId: String? = null,
     val message: String? = null,
     val models: List<ModelStatus> = emptyList(),
     /** Şu an indirilen / silinen dil kodları */
@@ -52,6 +60,10 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Tarayıcıdan "Paylaş" ile gelen link. */
     val sharedUrl = MutableStateFlow<String?>(null)
+
+    /** Yeni bölüm ekranında yazılanlar; başka ekrana gidip dönünce kaybolmasın diye burada tutulur. */
+    var draftUrl by mutableStateOf("")
+    var draftTitle by mutableStateOf("")
 
     private var job: Job? = null
 
@@ -109,7 +121,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    // ---------------- Kayıt klasörü ----------------
+    // ---------------- Kayıt klasörü / CBZ ----------------
 
     fun setFolder(uri: Uri) {
         val cr = getApplication<Application>().contentResolver
@@ -122,23 +134,32 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         settings.setFolder(uri.toString())
     }
 
+    /** CBZ'yi yazar, dosya adını bölüme kaydeder. Klasör seçilmemişse null döner. */
+    private fun saveCbz(c: Chapter): String? {
+        val folder = settings.folder.value ?: return null
+        val name = library.exportCbz(getApplication<Application>(), c, Uri.parse(folder))
+        if (name != c.cbz) library.save(c.copy(cbz = name))
+        return name
+    }
+
     /** Var olan bir bölümü elle CBZ olarak kaydet. */
     fun exportChapter(id: String) {
         viewModelScope.launch(Dispatchers.IO) {
             val c = library.load(id) ?: return@launch
-            val folder = settings.folder.value
-            if (folder == null) {
+            if (settings.folder.value == null) {
                 msg("Önce Ayarlar'dan kayıt klasörünü seç")
                 return@launch
             }
             try {
-                val name = library.exportCbz(getApplication<Application>(), c, Uri.parse(folder))
-                msg("Kaydedildi: $name")
+                msg("Kaydedildi: ${saveCbz(c)}")
             } catch (e: Exception) {
                 msg("CBZ kaydedilemedi: ${e.message}")
             }
+            refresh()
         }
     }
+
+    // ---------------- Kütüphane ----------------
 
     fun refresh() {
         viewModelScope.launch(Dispatchers.IO) {
@@ -148,13 +169,16 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun consumeMessage() = _state.update { it.copy(message = null) }
+    fun toast(text: String) = msg(text)
     private fun msg(text: String) = _state.update { it.copy(message = text) }
     private fun progress(title: String, done: Int, total: Int, status: String) =
         _state.update { it.copy(work = WorkState(title, done, total, status)) }
 
+    /** Çevrilmekte olan bölüm silinirse önce çeviri durdurulur. */
     fun delete(id: String) {
-        viewModelScope.launch(Dispatchers.IO) {
-            library.delete(id)
+        viewModelScope.launch {
+            if (_state.value.activeId == id) job?.cancelAndJoin()
+            withContext(Dispatchers.IO) { library.delete(id) }
             refresh()
         }
     }
@@ -163,21 +187,81 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         job?.cancel()
     }
 
+    /** Yarım kalan (galeriden gelen) bölümü olduğu haliyle tamamlanmış say. */
+    fun markComplete(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val c = library.load(id)?.takeIf { it.translated.isNotEmpty() } ?: return@launch
+            val done = c.copy(complete = true)
+            library.save(done)
+            runCatching { saveCbz(done) }
+            refresh()
+        }
+    }
+
     // ---------------- Linkten çeviri ----------------
 
     fun translateUrl(url: String, title: String) {
         launchWork(title.ifBlank { url }) {
-            val fetcher = ChapterFetcher(http)
-            progress(title.ifBlank { url }, 0, 0, "Bölüm sayfası okunuyor…")
-            val page = fetcher.fetch(url)
-            if (page.images.isEmpty()) {
-                throw IllegalStateException(
-                    "Sayfada resim bulunamadı. Site resimleri JavaScript ile yüklüyor olabilir; galeriden seçmeyi dene."
-                )
-            }
-            val loaders = page.images.map { img -> { fetcher.download(img, url)?.let { decode(it) } } }
-            runChapter(title.ifBlank { page.title }, url, loaders)
+            val (pageTitle, loaders) = fetchChapter(url, title.ifBlank { url })
+            runChapter(title.ifBlank { pageTitle }, url, loaders, existing = null)
         }
+    }
+
+    /** Linkten gelen yarım bölümü kaldığı yerden devam ettir. */
+    fun resume(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val c = library.load(id)?.takeIf { it.resumable } ?: return@launch
+            launchWork(c.title) {
+                val (_, loaders) = fetchChapter(c.source, c.title)
+                runChapter(c.title, c.source, loaders, existing = c)
+            }
+        }
+    }
+
+    /**
+     * Bölüm sayfasındaki resimleri önce geçici klasöre indirir, sonra bölüme ait olmayanları ayıklar:
+     * sayfaların çoğundan belirgin şekilde dar olan resimler (öneri kapakları, küçük görseller) atlanır.
+     * Çift sayfa gibi daha geniş sayfalar korunur.
+     */
+    private suspend fun fetchChapter(url: String, label: String): Pair<String, List<() -> Bitmap?>> {
+        val fetcher = ChapterFetcher(http)
+        progress(label, 0, 0, "Bölüm sayfası okunuyor…")
+        val page = fetcher.fetch(url)
+        if (page.images.isEmpty()) {
+            throw IllegalStateException(
+                "Sayfada resim bulunamadı. Site resimleri JavaScript ile yüklüyor olabilir; galeriden seçmeyi dene."
+            )
+        }
+
+        val tmp = File(getApplication<Application>().cacheDir, "fetch").apply {
+            deleteRecursively()
+            mkdirs()
+        }
+        val files = mutableListOf<File>()
+        page.images.forEachIndexed { i, img ->
+            currentCoroutineContext().ensureActive()
+            progress(label, i, page.images.size, "Resimler indiriliyor ${i + 1}/${page.images.size}…")
+            val bytes = fetcher.download(img, url) ?: return@forEachIndexed
+            val f = File(tmp, String.format(Locale.US, "%04d", i))
+            f.writeBytes(bytes)
+            files += f
+        }
+
+        val sized = files.map { f ->
+            val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+            BitmapFactory.decodeFile(f.path, o)
+            Triple(f, o.outWidth, o.outHeight)
+        }.filter { (_, w, h) -> w >= 300 && h >= 300 }
+
+        val keep = if (sized.size >= 3) {
+            val widths = sized.map { it.second }
+            val main = widths.maxBy { w -> widths.count { kotlin.math.abs(it - w) <= w * 0.03 } }
+            sized.filter { it.second >= main * 0.6 }
+        } else sized
+
+        if (keep.isEmpty()) throw IllegalStateException("Sayfadaki resimler indirilemedi")
+        val loaders: List<() -> Bitmap?> = keep.map { (f, _, _) -> { decode(f.readBytes()) } }
+        return page.title to loaders
     }
 
     // ---------------- Galeriden çeviri ----------------
@@ -188,11 +272,36 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         val resolver = getApplication<Application>().contentResolver
         launchWork(name) {
-            val loaders = uris.map { u ->
+            // Dosya adlarına göre doğal sırala (2.jpg, 10.jpg'den önce gelir); ad okunamazsa seçim sırası korunur
+            val names = uris.map { u ->
+                runCatching {
+                    resolver.query(u, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
+                        ?.use { c -> if (c.moveToFirst()) c.getString(0) else null }
+                }.getOrNull()
+            }
+            val ordered = if (names.all { it != null }) {
+                uris.zip(names).sortedWith { a, b -> naturalCompare(a.second!!, b.second!!) }.map { it.first }
+            } else uris
+            val loaders = ordered.map { u ->
                 { resolver.openInputStream(u)?.use { it.readBytes() }?.let { decode(it) } }
             }
-            runChapter(name, "galeri", loaders)
+            runChapter(name, "galeri", loaders, existing = null)
         }
+    }
+
+    private fun naturalCompare(a: String, b: String): Int {
+        val re = Regex("\\d+|\\D+")
+        val pa = re.findAll(a.lowercase(Locale.ROOT)).map { it.value }.toList()
+        val pb = re.findAll(b.lowercase(Locale.ROOT)).map { it.value }.toList()
+        for (i in 0 until minOf(pa.size, pb.size)) {
+            val x = pa[i]
+            val y = pb[i]
+            val c = if (x[0].isDigit() && y[0].isDigit()) {
+                (x.toBigInteger()).compareTo(y.toBigInteger())
+            } else x.compareTo(y)
+            if (c != 0) return c
+        }
+        return pa.size - pb.size
     }
 
     // ---------------- Ortak iş akışı ----------------
@@ -207,20 +316,26 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             try {
                 block()
             } catch (e: CancellationException) {
-                msg("İptal edildi")
+                msg("İptal edildi. Linkten gelen bölümü ⋮ menüsünden kaldığı yerden devam ettirebilirsin.")
                 throw e
             } catch (e: Exception) {
                 msg("Hata: ${e.message ?: e.javaClass.simpleName}")
             } finally {
-                _state.update { it.copy(work = null) }
+                File(getApplication<Application>().cacheDir, "fetch").deleteRecursively()
+                _state.update { it.copy(work = null, activeId = null) }
                 refresh()
             }
         }
     }
 
-    private suspend fun runChapter(name: String, source: String, loaders: List<() -> Bitmap?>) {
-        val src = srcLang
-        val tgt = tgtLang
+    private suspend fun runChapter(
+        name: String,
+        source: String,
+        loaders: List<() -> Bitmap?>,
+        existing: Chapter?,
+    ) {
+        val src = existing?.src ?: srcLang
+        val tgt = existing?.tgt ?: tgtLang
         val missing = buildList {
             if (!models.isReady(src, asSource = true)) add(Langs.name(src))
             if (!models.isReady(tgt, asSource = false)) add(Langs.name(tgt))
@@ -232,7 +347,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
         val total = loaders.size
         val now = System.currentTimeMillis()
-        var ch = Chapter(
+        var ch = existing ?: Chapter(
             id = now.toString(36),
             title = name,
             source = source,
@@ -244,15 +359,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             translated = emptyList(),
         )
         library.save(ch)
+        _state.update { it.copy(activeId = ch.id) }
         refresh()
 
+        val done = ch.donePages
+        var failed = 0
         PageTranslator(src, tgt).use { pt ->
-            progress(name, 0, total, "Dil modeli hazırlanıyor (ilk seferde ~30 MB iner)…")
+            progress(name, 0, total, "Dil modeli hazırlanıyor…")
             pt.prepare()
 
             loaders.forEachIndexed { i, load ->
                 currentCoroutineContext().ensureActive()
-                progress(name, i, total, "Sayfa ${i + 1}/$total indiriliyor…")
+                if (i in done) return@forEachIndexed // devam ederken önceden çevrilen sayfalar atlanır
+                progress(name, i, total, "Sayfa ${i + 1}/$total hazırlanıyor…")
                 val bmp = runCatching { load() }.getOrNull() ?: return@forEachIndexed
                 // Küçük resimler (ikon, reklam vb.) atlanır
                 if (bmp.width < 300 || bmp.height < 300) {
@@ -267,10 +386,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 if (out !== bmp) out.recycle()
                 bmp.recycle()
 
-                ch = ch.copy(original = ch.original + orig, translated = ch.translated + tr)
+                ch = ch.copy(
+                    original = (ch.original + orig.map { it.first }).distinct().sorted(),
+                    translated = (ch.translated + tr.map { it.first }).distinct().sorted(),
+                    ratios = ch.ratios + orig + tr,
+                )
                 library.save(ch)
                 refresh()
             }
+            failed = pt.failedBubbles
         }
 
         if (ch.translated.isEmpty()) {
@@ -281,20 +405,19 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         library.save(ch)
 
         // Seçilen klasöre CBZ olarak da kaydet
-        val folder = settings.folder.value
-        val saved = if (folder == null) null else {
+        val saved = if (settings.folder.value == null) null else {
             progress(name, total, total, "CBZ olarak kaydediliyor…")
             try {
-                library.exportCbz(getApplication<Application>(), ch, Uri.parse(folder))
+                saveCbz(ch)
             } catch (e: Exception) {
                 msg("Çeviri hazır ama CBZ kaydedilemedi: ${e.message}")
                 return
             }
         }
-        msg(
-            if (saved != null) "\"$name\" hazır (${ch.pageCount} sayfa) · $saved kaydedildi"
-            else "\"$name\" hazır (${ch.pageCount} sayfa)"
-        )
+        val parts = mutableListOf("\"$name\" hazır (${ch.pageCount} sayfa)")
+        if (saved != null) parts += "$saved kaydedildi"
+        if (failed > 0) parts += "$failed balon çevrilemedi"
+        msg(parts.joinToString(" · "))
     }
 
     private fun decode(bytes: ByteArray): Bitmap? {

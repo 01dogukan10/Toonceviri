@@ -9,8 +9,8 @@ Tamamen ücretsiz ve cihaz içinde çalışan manga / manhwa / webtoon çevirici
 - **Kütüphane ve çevrimdışı okuma:** Çevrilen bölümler cihazda saklanır. Dikey okuyucuda internetsiz okunur, orijinal/çeviri arasında geçiş yapılabilir.
 
 ## Dil desteği
-- Kaynak: İngilizce, Türkçe, Korece, Japonca, Çince ve Latin alfabeli diğer diller
-- Hedef: yukarıdakiler + Rusça, Arapça, Tayca
+- Kaynak: Latin alfabeli diller + Korece, Japonca, Çince
+- Hedef: çeviri motorunun desteklediği tüm diller (~59)
 - İlk çeviride dil modeli (~30 MB) indirilir, sonrası internetsiz.
 
 ## APK alma

@@ -25,7 +25,20 @@ data class Chapter(
     val complete: Boolean,
     val original: List<String>,
     val translated: List<String>,
+    /** Parça adı → en/boy oranı (okuyucu, resmi açmadan yer ayırabilsin diye) */
+    val ratios: Map<String, Float> = emptyMap(),
+    /** Seçilen klasöre yazılan CBZ dosyasının adı */
+    val cbz: String? = null,
 ) {
+    /** Linkten gelen yarım bölümler kaldığı yerden devam ettirilebilir. */
+    val resumable: Boolean get() = !complete && source.startsWith("http")
+
+    /** Çevirisi biten sayfa numaraları (yarım bölümü devam ettirirken atlanır). */
+    val donePages: Set<Int>
+        get() = translated.filter { it.endsWith("_00.jpg") }
+            .mapNotNull { it.removePrefix("t_").substringBefore("_").toIntOrNull() }
+            .toSet()
+
     /** Uzun sayfalar parçalara bölündüğü için "_00" ile biten parçalar = sayfa sayısı. */
     val pageCount: Int get() = translated.count { it.endsWith("_00.jpg") }
 }
@@ -58,6 +71,10 @@ class Library(private val root: File) {
             complete = j.optBoolean("complete"),
             original = j.optJSONArray("original").toStringList(),
             translated = j.optJSONArray("translated").toStringList(),
+            ratios = j.optJSONObject("ratios")?.let { r ->
+                r.keys().asSequence().associateWith { k -> r.optDouble(k, 0.7).toFloat() }
+            } ?: emptyMap(),
+            cbz = j.optString("cbz").ifBlank { null },
         )
     }.getOrNull()
 
@@ -73,6 +90,8 @@ class Library(private val root: File) {
             .put("complete", c.complete)
             .put("original", JSONArray(c.original))
             .put("translated", JSONArray(c.translated))
+            .put("ratios", JSONObject().also { r -> c.ratios.forEach { (k, v) -> r.put(k, v.toDouble()) } })
+            .put("cbz", c.cbz ?: "")
         val tmp = File(d, "meta.json.tmp")
         tmp.writeText(j.toString())
         tmp.renameTo(File(d, "meta.json"))
@@ -86,8 +105,9 @@ class Library(private val root: File) {
      * Resmi en fazla 3000 px yüksekliğinde parçalara bölüp JPEG olarak kaydeder.
      * Çok uzun webtoon şeritleri tek parça olursa telefon çizemiyor.
      */
-    fun savePieces(id: String, prefix: String, page: Int, bmp: Bitmap): List<String> {
-        val names = mutableListOf<String>()
+    fun savePieces(id: String, prefix: String, page: Int, bmp: Bitmap): List<Pair<String, Float>> {
+        dir(id).mkdirs()
+        val names = mutableListOf<Pair<String, Float>>()
         val maxH = 3000
         var y = 0
         var part = 0
@@ -97,7 +117,7 @@ class Library(private val root: File) {
             val name = String.format(Locale.US, "%s_%03d_%02d.jpg", prefix, page, part)
             FileOutputStream(File(dir(id), name)).use { piece.compress(Bitmap.CompressFormat.JPEG, 90, it) }
             if (piece !== bmp) piece.recycle()
-            names += name
+            names += name to (bmp.width.toFloat() / h)
             y += h
             part++
         }
@@ -113,7 +133,15 @@ class Library(private val root: File) {
             ?.takeIf { it.canWrite() }
             ?: throw IllegalStateException("Kayıt klasörüne yazılamıyor, Ayarlar'dan klasörü yeniden seç")
         val safe = c.title.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().take(80).ifBlank { "Bolum" }
-        val name = "$safe [${c.tgt.uppercase(Locale.ROOT)}].cbz"
+        val base = "$safe [${c.tgt.uppercase(Locale.ROOT)}]"
+        // Bu bölüm daha önce kaydedildiyse aynı dosyanın üstüne yaz;
+        // aynı isimde başka bir bölümün dosyası varsa "(2)", "(3)" ekle, onu silme.
+        val name = if (c.cbz != null && c.cbz.startsWith(base)) c.cbz else {
+            var n = "$base.cbz"
+            var k = 2
+            while (dir.findFile(n) != null) n = "$base (${k++}).cbz"
+            n
+        }
         dir.findFile(name)?.delete()
         val f = dir.createFile("application/octet-stream", name)
             ?: throw IllegalStateException("CBZ dosyası oluşturulamadı")

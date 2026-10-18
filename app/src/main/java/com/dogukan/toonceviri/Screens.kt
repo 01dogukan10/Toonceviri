@@ -1,5 +1,8 @@
 package com.dogukan.toonceviri
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
@@ -55,7 +58,9 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -65,6 +70,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontWeight
@@ -136,6 +146,8 @@ fun LibraryScreen(
                 ChapterCard(
                     vm = vm,
                     c = c,
+                    active = state.activeId == c.id,
+                    busy = state.work != null,
                     onClick = { if (c.translated.isNotEmpty()) onOpen(c.id) },
                     onExport = { vm.exportChapter(c.id) },
                     onDelete = { toDelete = c },
@@ -148,7 +160,12 @@ fun LibraryScreen(
         AlertDialog(
             onDismissRequest = { toDelete = null },
             title = { Text("Bölüm silinsin mi?") },
-            text = { Text("\"${c.title}\" ve tüm sayfaları cihazdan silinecek.") },
+            text = {
+                Text(
+                    if (state.activeId == c.id) "Bu bölüm şu an çevriliyor. Çeviri durdurulup bölüm silinecek."
+                    else "\"${c.title}\" ve tüm sayfaları cihazdan silinecek. Kaydedilen CBZ dosyasına dokunulmaz."
+                )
+            },
             confirmButton = {
                 TextButton(onClick = {
                     vm.delete(c.id)
@@ -184,7 +201,15 @@ private fun WorkCard(w: WorkState, onCancel: () -> Unit) {
 }
 
 @Composable
-private fun ChapterCard(vm: MainViewModel, c: Chapter, onClick: () -> Unit, onExport: () -> Unit, onDelete: () -> Unit) {
+private fun ChapterCard(
+    vm: MainViewModel,
+    c: Chapter,
+    active: Boolean,
+    busy: Boolean,
+    onClick: () -> Unit,
+    onExport: () -> Unit,
+    onDelete: () -> Unit,
+) {
     var menu by remember { mutableStateOf(false) }
     Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
         Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -213,9 +238,15 @@ private fun ChapterCard(vm: MainViewModel, c: Chapter, onClick: () -> Unit, onEx
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
-                if (!c.complete) {
+                if (active) {
                     Text(
-                        "Tamamlanmadı",
+                        "Çevriliyor…",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.primary,
+                    )
+                } else if (!c.complete) {
+                    Text(
+                        if (c.resumable) "Yarım kaldı · ⋮ menüsünden devam et" else "Yarım kaldı",
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.error,
                     )
@@ -224,6 +255,25 @@ private fun ChapterCard(vm: MainViewModel, c: Chapter, onClick: () -> Unit, onEx
             Box {
                 IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "Seçenekler") }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    if (!active && c.resumable) {
+                        DropdownMenuItem(
+                            text = { Text("Kaldığı yerden devam et") },
+                            enabled = !busy,
+                            onClick = {
+                                menu = false
+                                vm.resume(c.id)
+                            },
+                        )
+                    }
+                    if (!active && !c.complete && c.translated.isNotEmpty()) {
+                        DropdownMenuItem(
+                            text = { Text("Bu haliyle bitir") },
+                            onClick = {
+                                menu = false
+                                vm.markComplete(c.id)
+                            },
+                        )
+                    }
                     if (c.complete) {
                         DropdownMenuItem(
                             text = { Text("CBZ olarak kaydet") },
@@ -260,13 +310,23 @@ fun NewChapterScreen(
     onStarted: () -> Unit,
     onModels: () -> Unit,
 ) {
-    var url by rememberSaveable { mutableStateOf(initialUrl ?: "") }
-    var title by rememberSaveable { mutableStateOf("") }
+    // Link ve başlık ViewModel'de tutulur: Dil modelleri ekranına gidip dönünce kaybolmaz
+    val url = vm.draftUrl
+    val title = vm.draftTitle
     var src by rememberSaveable { mutableStateOf(vm.srcLang) }
     var tgt by rememberSaveable { mutableStateOf(vm.tgtLang) }
 
     LaunchedEffect(initialUrl) {
-        if (initialUrl != null) url = initialUrl
+        if (initialUrl != null) vm.draftUrl = initialUrl
+    }
+    // Dil seçimi de anında kaydedilir
+    LaunchedEffect(src, tgt) {
+        vm.srcLang = src
+        vm.tgtLang = tgt
+    }
+    fun clearDraft() {
+        vm.draftUrl = ""
+        vm.draftTitle = ""
     }
 
     val sameLang = src == tgt
@@ -283,7 +343,8 @@ fun NewChapterScreen(
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.PickMultipleVisualMedia(100)) { uris ->
         if (uris.isNotEmpty()) {
             saveLangs()
-            vm.translateUris(uris, title.trim())
+            vm.translateUris(uris, vm.draftTitle.trim())
+            clearDraft()
             onStarted()
         }
     }
@@ -312,7 +373,7 @@ fun NewChapterScreen(
         ) {
             OutlinedTextField(
                 value = url,
-                onValueChange = { url = it },
+                onValueChange = { vm.draftUrl = it },
                 label = { Text("Bölüm linki") },
                 placeholder = { Text("https://…") },
                 singleLine = true,
@@ -321,7 +382,7 @@ fun NewChapterScreen(
             )
             OutlinedTextField(
                 value = title,
-                onValueChange = { title = it },
+                onValueChange = { vm.draftTitle = it },
                 label = { Text("Başlık (isteğe bağlı)") },
                 singleLine = true,
                 modifier = Modifier.fillMaxWidth(),
@@ -331,10 +392,12 @@ fun NewChapterScreen(
                 LangPicker("Kaynak dil", src, Langs.source, readySrc, loaded) { src = it }
                 TextButton(
                     onClick = {
-                        if (Langs.source.any { it.code == tgt }) {
+                        if (Langs.canBeSource(tgt)) {
                             val t = src
                             src = tgt
                             tgt = t
+                        } else {
+                            vm.toast("${Langs.name(tgt)} kaynak dil olamaz: bu alfabedeki yazıyı okuma desteği yok")
                         }
                     },
                 ) { Text("⇄", style = MaterialTheme.typography.titleLarge) }
@@ -360,6 +423,7 @@ fun NewChapterScreen(
                 onClick = {
                     saveLangs()
                     vm.translateUrl(url.trim(), title.trim())
+                    clearDraft()
                     onStarted()
                 },
                 enabled = url.trim().startsWith("http") && !sameLang && !missing,
@@ -423,7 +487,7 @@ private fun RowScope.LangPicker(
 // ======================= Okuyucu =======================
 
 @Composable
-fun ReaderScreen(vm: MainViewModel, state: UiState, id: String, onBack: () -> Unit) {
+fun ReaderScreen(vm: MainViewModel, state: UiState, id: String, snack: SnackbarHostState, onBack: () -> Unit) {
     val ch = state.chapters.firstOrNull { it.id == id }
     BackHandler(onBack = onBack)
     if (ch == null) {
@@ -437,6 +501,19 @@ fun ReaderScreen(vm: MainViewModel, state: UiState, id: String, onBack: () -> Un
     val theme by vm.settings.theme.collectAsStateWithLifecycle()
     val bg = Color(theme.readerBg.argb)
 
+    // Durum çubuğu simgeleri okunabilir kalsın: üst çubuk açıkken (siyah) beyaz simge,
+    // kapalıyken beyaz okuyucu arka planında koyu simge
+    val view = LocalView.current
+    val appLight = MaterialTheme.colorScheme.background.luminance() > 0.5f
+    val wantLight = !bars && theme.readerBg == ReaderBg.WHITE
+    DisposableEffect(wantLight) {
+        val window = view.context.findActivity()?.window
+        if (window != null) WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = wantLight
+        onDispose {
+            if (window != null) WindowCompat.getInsetsController(window, view).isAppearanceLightStatusBars = appLight
+        }
+    }
+
     Box(Modifier.fillMaxSize().background(bg)) {
         LazyColumn(
             modifier = Modifier.fillMaxSize().pointerInput(Unit) {
@@ -445,7 +522,11 @@ fun ReaderScreen(vm: MainViewModel, state: UiState, id: String, onBack: () -> Un
         ) {
             items(pages, key = { it }) { name ->
                 val f = vm.library.file(ch.id, name)
-                val ratio = remember(name) { Library.aspect(f) }
+                // Oran bölüm bilgisinde kayıtlı; eski bölümlerde arka planda okunur (kaydırma takılmasın)
+                val stored = ch.ratios[name]
+                val ratio by produceState(initialValue = stored ?: 0.7f, name) {
+                    if (stored == null) value = withContext(Dispatchers.IO) { Library.aspect(f) }
+                }
                 AsyncImage(
                     model = f,
                     contentDescription = null,
@@ -486,5 +567,16 @@ fun ReaderScreen(vm: MainViewModel, state: UiState, id: String, onBack: () -> Un
                 }
             }
         }
+
+        SnackbarHost(snack, Modifier.align(Alignment.BottomCenter).navigationBarsPadding())
     }
+}
+
+private fun Context.findActivity(): Activity? {
+    var c: Context? = this
+    while (c is ContextWrapper) {
+        if (c is Activity) return c
+        c = c.baseContext
+    }
+    return null
 }
