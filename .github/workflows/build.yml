@@ -38,9 +38,15 @@ jobs:
         id: sign
         env:
           SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
         run: |
           if [ -n "$SIGNING_KEY" ]; then
-            echo "$SIGNING_KEY" | base64 -d > "$RUNNER_TEMP/toonceviri.jks"
+            # Yapıştırırken araya giren boşluk / satır sonlarını temizle
+            printf %s "$SIGNING_KEY" | tr -d ' \r\n\t' | base64 -d > "$RUNNER_TEMP/toonceviri.jks" \
+              || { echo "::error::SIGNING_KEY çözülemedi (base64 bozuk)"; exit 1; }
+            PW=$(printf %s "$SIGNING_PASSWORD" | tr -d ' \r\n\t')
+            keytool -list -keystore "$RUNNER_TEMP/toonceviri.jks" -storepass "$PW" > /dev/null 2>&1 \
+              || { echo "::error::İmza anahtarı açılamadı: SIGNING_PASSWORD yanlış ya da SIGNING_KEY eksik kopyalanmış"; exit 1; }
             echo "SIGNING_KEYSTORE=$RUNNER_TEMP/toonceviri.jks" >> "$GITHUB_ENV"
             echo "SIGNED=true" >> "$GITHUB_ENV"
           else
@@ -50,7 +56,16 @@ jobs:
       - name: APK derle
         env:
           SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
-        run: gradle assembleRelease --no-daemon --stacktrace
+        run: |
+          set +e
+          gradle assembleRelease --no-daemon 2>&1 | tee build.log
+          code=${PIPESTATUS[0]}
+          if [ $code -ne 0 ]; then
+            msg=$(grep -A12 "What went wrong" build.log | head -14 | sed ':a;N;$!ba;s/\n/%0A/g')
+            [ -z "$msg" ] && msg=$(grep -m5 "^e: " build.log | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error::$msg"
+          fi
+          exit $code
 
       - name: APK'yı adlandır
         run: |

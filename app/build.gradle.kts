@@ -23,7 +23,7 @@ android {
     // İmza anahtarı GitHub Secrets'tan gelir (repoda durmaz).
     // Her derlemede aynı imza → yeni sürüm eskisinin üstüne güncelleme olarak kurulur.
     val keystorePath = System.getenv("SIGNING_KEYSTORE")
-    val keystorePass = System.getenv("SIGNING_PASSWORD")
+    val keystorePass = System.getenv("SIGNING_PASSWORD")?.trim()
     val hasKey = !keystorePath.isNullOrBlank() && !keystorePass.isNullOrBlank()
 
     signingConfigs {
