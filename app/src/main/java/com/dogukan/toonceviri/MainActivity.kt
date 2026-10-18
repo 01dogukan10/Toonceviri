@@ -238,6 +238,30 @@ fun App(vm: MainViewModel) {
             onBack = { route = modelsBack },
         )
 
+        route.startsWith("edit:") -> {
+            val id = route.removePrefix("edit:")
+            EditChapterScreen(
+                vm = vm,
+                state = state,
+                id = id,
+                snack = snack,
+                onBack = { route = "lib" },
+                onEditPage = { p -> route = "page:$id:$p" },
+            )
+        }
+
+        route.startsWith("page:") -> {
+            val (id, p) = route.removePrefix("page:").split(":").let { it[0] to (it.getOrNull(1)?.toIntOrNull() ?: 0) }
+            PageEditorScreen(
+                vm = vm,
+                state = state,
+                id = id,
+                page = p,
+                snack = snack,
+                onBack = { route = "edit:$id" },
+            )
+        }
+
         route.startsWith("read:") -> ReaderScreen(
             vm = vm,
             state = state,
@@ -252,6 +276,7 @@ fun App(vm: MainViewModel) {
             snack = snack,
             onNew = { route = "new" },
             onOpen = { route = "read:$it" },
+            onEdit = { route = "edit:$it" },
             onSettings = { route = "settings" },
         )
     }

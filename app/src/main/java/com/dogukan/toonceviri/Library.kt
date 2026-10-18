@@ -3,6 +3,7 @@ package com.dogukan.toonceviri
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.graphics.Canvas
 import android.net.Uri
 import androidx.documentfile.provider.DocumentFile
 import org.json.JSONArray
@@ -29,7 +30,13 @@ data class Chapter(
     val ratios: Map<String, Float> = emptyMap(),
     /** Seçilen klasöre yazılan CBZ dosyasının adı */
     val cbz: String? = null,
+    /** Kullanıcının verdiği kategori (ör. seri adı); boşsa kategorisiz */
+    val category: String? = null,
 ) {
+    /** Sayfa numaraları sırayla (her sayfa birden çok parçadan oluşabilir). */
+    val pages: List<Int>
+        get() = translated.mapNotNull { Library.pageOf(it) }.distinct().sorted()
+
     /** Linkten gelen yarım bölümler kaldığı yerden devam ettirilebilir. */
     val resumable: Boolean get() = !complete && source.startsWith("http")
 
@@ -75,6 +82,7 @@ class Library(private val root: File) {
                 r.keys().asSequence().associateWith { k -> r.optDouble(k, 0.7).toFloat() }
             } ?: emptyMap(),
             cbz = j.optString("cbz").ifBlank { null },
+            category = j.optString("category").trim().ifBlank { null },
         )
     }.getOrNull()
 
@@ -92,6 +100,7 @@ class Library(private val root: File) {
             .put("translated", JSONArray(c.translated))
             .put("ratios", JSONObject().also { r -> c.ratios.forEach { (k, v) -> r.put(k, v.toDouble()) } })
             .put("cbz", c.cbz ?: "")
+            .put("category", c.category ?: "")
         val tmp = File(d, "meta.json.tmp")
         tmp.writeText(j.toString())
         tmp.renameTo(File(d, "meta.json"))
@@ -159,7 +168,96 @@ class Library(private val root: File) {
         return f.name ?: name
     }
 
+    /** Seçilen klasördeki eski CBZ dosyasını siler (başlık ya da dil değişince yenisi yazılır). */
+    fun deleteCbz(ctx: Context, tree: Uri, name: String) {
+        runCatching { DocumentFile.fromTreeUri(ctx, tree)?.findFile(name)?.delete() }
+    }
+
+    // ---------------- Düzenleme ----------------
+
+    private fun bubbleFile(id: String, page: Int) = File(dir(id), String.format(Locale.US, "b_%03d.json", page))
+
+    fun saveBubbles(id: String, page: Int, bubbles: List<BubbleData>, width: Int, height: Int) {
+        dir(id).mkdirs()
+        bubbleFile(id, page).writeText(BubbleData.listToJson(bubbles, width, height))
+    }
+
+    /** Sayfanın balon bilgisi; 0.15'ten önce çevrilen sayfalarda yoktur (null). */
+    fun loadBubbles(id: String, page: Int): List<BubbleData>? {
+        val f = bubbleFile(id, page)
+        return if (f.exists()) BubbleData.listFromJson(f.readText()) else null
+    }
+
+    fun pieces(c: Chapter, prefix: String, page: Int): List<String> {
+        val list = if (prefix == "o") c.original else c.translated
+        return list.filter { pageOf(it) == page }.sorted()
+    }
+
+    /** Bir sayfanın parçalarını alt alta birleştirip tek resim yapar. */
+    fun stitch(c: Chapter, prefix: String, page: Int): Bitmap? {
+        val opts = BitmapFactory.Options().apply {
+            inMutable = true
+            inPreferredConfig = Bitmap.Config.ARGB_8888
+        }
+        val parts = pieces(c, prefix, page).mapNotNull { BitmapFactory.decodeFile(file(c.id, it).path, opts) }
+        if (parts.isEmpty()) return null
+        if (parts.size == 1) return parts[0]
+        val out = Bitmap.createBitmap(parts[0].width, parts.sumOf { it.height }, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(out)
+        var y = 0f
+        parts.forEach {
+            canvas.drawBitmap(it, 0f, y, null)
+            y += it.height
+            it.recycle()
+        }
+        return out
+    }
+
+    /** Bir sayfanın çevrilmiş parçalarını yenileriyle değiştirir. */
+    fun replaceTranslated(c: Chapter, page: Int, bmp: Bitmap): Chapter {
+        val old = pieces(c, "t", page)
+        old.forEach { file(c.id, it).delete() }
+        val fresh = savePieces(c.id, "t", page, bmp)
+        return c.copy(
+            translated = (c.translated - old.toSet() + fresh.map { it.first }).distinct().sorted(),
+            ratios = (c.ratios - old.toSet()) + fresh,
+        )
+    }
+
+    /**
+     * Sayfaları verilen sıraya göre yeniden numaralar (0, 1, 2…). Listede olmayan sayfalar silinir.
+     * Orijinal, çeviri ve balon dosyaları birlikte taşınır.
+     */
+    fun reorderPages(c: Chapter, order: List<Int>): Chapter {
+        val d = dir(c.id)
+        val renames = HashMap<String, String>()
+        val files = d.listFiles()?.filter { pageOf(it.name) != null } ?: emptyList()
+        // 1) Kalan sayfaları geçici adlara taşı (çakışma olmasın)
+        order.forEachIndexed { newIdx, oldIdx ->
+            files.filter { pageOf(it.name) == oldIdx }.forEach { f ->
+                val nn = f.name.substring(0, 2) + String.format(Locale.US, "%03d", newIdx) + f.name.substring(5)
+                f.renameTo(File(d, "tmp_$nn"))
+                renames[f.name] = nn
+            }
+        }
+        // 2) Listede olmayan (silinen) sayfaların dosyalarını sil
+        d.listFiles()?.filter { pageOf(it.name) != null }?.forEach { it.delete() }
+        // 3) Geçici adlardan son adlara
+        d.listFiles()?.filter { it.name.startsWith("tmp_") }?.forEach { it.renameTo(File(d, it.name.removePrefix("tmp_"))) }
+
+        return c.copy(
+            original = c.original.mapNotNull { renames[it] }.sorted(),
+            translated = c.translated.mapNotNull { renames[it] }.sorted(),
+            ratios = c.ratios.mapNotNull { (k, v) -> renames[k]?.let { it to v } }.toMap(),
+        )
+    }
+
     companion object {
+        private val PAGE_FILE = Regex("^[otb]_(\\d{3})[_.]")
+
+        /** "t_004_01.jpg" → 4; sayfa dosyası değilse null */
+        fun pageOf(name: String): Int? = PAGE_FILE.find(name)?.groupValues?.get(1)?.toIntOrNull()
+
         /** Okuyucuda resim yüklenmeden önce doğru yüksekliği ayırmak için en/boy oranı. */
         fun aspect(f: File): Float {
             val o = BitmapFactory.Options().apply { inJustDecodeBounds = true }

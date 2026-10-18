@@ -379,6 +379,164 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    // ---------------- Düzenleme ----------------
+
+    private fun isActive(id: String): Boolean {
+        if (_state.value.activeId == id) {
+            msg("Bu bölüm şu an çevriliyor; bitince ya da iptal edince düzenleyebilirsin")
+            return true
+        }
+        return false
+    }
+
+    /**
+     * Düzenlemeden sonra kaydeder ve CBZ'yi günceller.
+     * Başlık ya da dil değiştiyse eski CBZ silinip yeni adla yazılır.
+     */
+    private fun commitEdit(before: Chapter, after: Chapter) {
+        var c = after
+        val folder = settings.folder.value
+        if (folder != null && before.cbz != null && c.complete) {
+            val nameChanged = before.title != c.title || before.tgt != c.tgt
+            if (nameChanged) {
+                library.deleteCbz(getApplication<Application>(), Uri.parse(folder), before.cbz)
+                c = c.copy(cbz = null)
+            }
+            library.save(c)
+            runCatching { saveCbz(c) }.onFailure { msg("CBZ güncellenemedi: ${it.message}") }
+        } else {
+            library.save(c)
+        }
+        refresh()
+    }
+
+    /** Başlık ve kategoriyi kaydeder. */
+    fun saveDetails(id: String, title: String, category: String) {
+        if (isActive(id)) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val c = library.load(id) ?: return@launch
+            val t = title.trim().ifBlank { c.title }
+            val cat = category.trim().ifBlank { null }
+            if (t == c.title && cat == c.category) return@launch
+            commitEdit(c, c.copy(title = t, category = cat))
+            msg("Kaydedildi")
+        }
+    }
+
+    /** Sayfayı bir yukarı (-1) ya da aşağı (+1) taşır. */
+    fun movePage(id: String, page: Int, delta: Int) {
+        if (isActive(id)) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val c = library.load(id) ?: return@launch
+            val order = c.pages.toMutableList()
+            val from = order.indexOf(page)
+            val to = from + delta
+            if (from < 0 || to !in order.indices) return@launch
+            order.add(to, order.removeAt(from))
+            commitEdit(c, library.reorderPages(c, order))
+        }
+    }
+
+    fun deletePage(id: String, page: Int) {
+        if (isActive(id)) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val c = library.load(id) ?: return@launch
+            if (c.pages.size <= 1) {
+                msg("Son sayfa silinemez; bölümün tamamını silmek için kütüphaneyi kullan")
+                return@launch
+            }
+            commitEdit(c, library.reorderPages(c, c.pages - page))
+            msg("Sayfa silindi")
+        }
+    }
+
+    suspend fun bubblesFor(id: String, page: Int): List<BubbleData>? =
+        withContext(Dispatchers.IO) { library.loadBubbles(id, page) }
+
+    /**
+     * Bir balonun çevirisini değiştirir ve sayfayı orijinalinden yeniden çizer.
+     * Boş metin = o balon çevrilmez, orijinal yazı kalır.
+     */
+    fun editBubble(id: String, page: Int, index: Int, newText: String, onDone: () -> Unit) {
+        if (isActive(id)) return
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val c = library.load(id) ?: return@launch
+                val list = library.loadBubbles(id, page) ?: return@launch
+                if (index !in list.indices) return@launch
+                val updated = list.toMutableList().also { it[index] = it[index].copy(translation = newText.trim()) }
+                val orig = library.stitch(c, "o", page) ?: throw IllegalStateException("Orijinal sayfa bulunamadı")
+                val w = orig.width
+                val h = orig.height
+                val out = BubbleRenderer.render(orig, updated)
+                library.saveBubbles(id, page, updated, w, h)
+                val c2 = library.replaceTranslated(c, page, out)
+                out.recycle()
+                library.save(c2)
+                refresh()
+            } catch (e: Exception) {
+                msg("Düzeltilemedi: ${e.message}")
+            }
+            withContext(Dispatchers.Main) { onDone() }
+        }
+    }
+
+    /** Sayfa düzenleyiciden çıkınca CBZ'yi güncel hale getir. */
+    fun syncCbz(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val c = library.load(id) ?: return@launch
+            if (c.complete && c.cbz != null && settings.folder.value != null) runCatching { saveCbz(c) }
+        }
+    }
+
+    /** Bölümü başka dillerle baştan çevirir (orijinal sayfalar saklı olduğu için internet gerekmez). */
+    fun retranslate(id: String, src: String, tgt: String) {
+        if (isActive(id)) return
+        if (src == tgt) {
+            msg("Kaynak ve hedef dil aynı olamaz")
+            return
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            val before = library.load(id) ?: return@launch
+            launchWork(before.title) {
+                val missing = buildList {
+                    if (!models.isReady(src, asSource = true)) add(Langs.name(src))
+                    if (!models.isReady(tgt, asSource = false)) add(Langs.name(tgt))
+                }
+                if (missing.isNotEmpty()) {
+                    throw IllegalStateException("Önce Ayarlar → Dil modelleri'nden indir: ${missing.joinToString()}")
+                }
+                _state.update { it.copy(activeId = id) }
+                var ch = before.copy(src = src, tgt = tgt)
+                val pages = before.pages
+                var failed = 0
+                PageTranslator(src, tgt).use { pt ->
+                    progress(ch.title, 0, pages.size, "Dil modeli hazırlanıyor…")
+                    pt.prepare()
+                    pages.forEachIndexed { n, p ->
+                        currentCoroutineContext().ensureActive()
+                        progress(ch.title, n, pages.size, "Sayfa ${n + 1}/${pages.size} yeniden çevriliyor…")
+                        val orig = library.stitch(ch, "o", p) ?: return@forEachIndexed
+                        val w = orig.width
+                        val h = orig.height
+                        val (out, bubbles) = pt.process(orig)
+                        library.saveBubbles(ch.id, p, bubbles, w, h)
+                        ch = library.replaceTranslated(ch, p, out)
+                        out.recycle()
+                        library.save(ch)
+                        refresh()
+                    }
+                    failed = pt.failedBubbles
+                }
+                commitEdit(before, ch)
+                msg(
+                    "\"${ch.title}\" ${Langs.name(src)} → ${Langs.name(tgt)} yeniden çevrildi" +
+                        if (failed > 0) " · $failed balon çevrilemedi" else ""
+                )
+            }
+        }
+    }
+
     // ---------------- CBZ / ZIP dosyasından çeviri ----------------
 
     /**
@@ -523,7 +681,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val orig = library.savePieces(ch.id, "o", i, bmp)
 
                 progress(name, i, total, "Sayfa ${i + 1}/$total çevriliyor…")
-                val out = pt.process(bmp)
+                val w = bmp.width
+                val h = bmp.height
+                val (out, bubbles) = pt.process(bmp)
+                // Balon bilgisi saklanır: çeviri sonradan elle düzeltilebilsin
+                library.saveBubbles(ch.id, i, bubbles, w, h)
                 val tr = library.savePieces(ch.id, "t", i, out)
                 if (out !== bmp) out.recycle()
                 bmp.recycle()

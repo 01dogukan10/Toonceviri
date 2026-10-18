@@ -7,7 +7,10 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -35,6 +38,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
@@ -45,6 +49,7 @@ import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
@@ -71,6 +76,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.luminance
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 import kotlinx.coroutines.Dispatchers
@@ -95,9 +101,15 @@ fun LibraryScreen(
     snack: SnackbarHostState,
     onNew: () -> Unit,
     onOpen: (String) -> Unit,
+    onEdit: (String) -> Unit,
     onSettings: () -> Unit,
 ) {
     var toDelete by remember { mutableStateOf<Chapter?>(null) }
+    // Kategori filtresi (null = tümü)
+    var filter by rememberSaveable { mutableStateOf<String?>(null) }
+    val categories = state.chapters.mapNotNull { it.category }.distinct().sortedBy { it.lowercase() }
+    if (filter != null && filter !in categories) filter = null
+    val shown = if (filter == null) state.chapters else state.chapters.filter { it.category == filter }
 
     Scaffold(
         topBar = {
@@ -143,7 +155,21 @@ fun LibraryScreen(
                 }
             }
 
-            items(state.chapters, key = { it.id }) { c ->
+            if (categories.isNotEmpty()) {
+                item(key = "filters") {
+                    Row(
+                        Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        FilterChip(selected = filter == null, onClick = { filter = null }, label = { Text("Tümü") })
+                        categories.forEach { cat ->
+                            FilterChip(selected = filter == cat, onClick = { filter = cat }, label = { Text(cat) })
+                        }
+                    }
+                }
+            }
+
+            items(shown, key = { it.id }) { c ->
                 ChapterCard(
                     vm = vm,
                     c = c,
@@ -151,6 +177,7 @@ fun LibraryScreen(
                     busy = state.work != null,
                     onClick = { if (c.translated.isNotEmpty()) onOpen(c.id) },
                     onExport = { vm.exportChapter(c.id) },
+                    onEdit = { onEdit(c.id) },
                     onDelete = { toDelete = c },
                 )
             }
@@ -201,6 +228,7 @@ private fun WorkCard(w: WorkState, onCancel: () -> Unit) {
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ChapterCard(
     vm: MainViewModel,
@@ -209,10 +237,18 @@ private fun ChapterCard(
     busy: Boolean,
     onClick: () -> Unit,
     onExport: () -> Unit,
+    onEdit: () -> Unit,
     onDelete: () -> Unit,
 ) {
     var menu by remember { mutableStateOf(false) }
-    Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
+    val ctx = LocalContext.current
+    // Dokun = oku, uzun bas = düzenle
+    Card(
+        modifier = Modifier.fillMaxWidth().clip(CardDefaults.shape).combinedClickable(
+            onClick = onClick,
+            onLongClick = onEdit,
+        ),
+    ) {
         Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
             val thumb = c.translated.firstOrNull()
             Box(
@@ -222,7 +258,7 @@ private fun ChapterCard(
             ) {
                 if (thumb != null) {
                     AsyncImage(
-                        model = vm.library.file(c.id, thumb),
+                        model = pageRequest(ctx, vm.library.file(c.id, thumb)),
                         contentDescription = null,
                         contentScale = ContentScale.Crop,
                         alignment = Alignment.TopCenter,
@@ -235,7 +271,8 @@ private fun ChapterCard(
                 Text(c.title, style = MaterialTheme.typography.titleSmall, maxLines = 2, overflow = TextOverflow.Ellipsis)
                 Spacer(Modifier.height(4.dp))
                 Text(
-                    "${c.pageCount} sayfa · ${Langs.short(c.src)} → ${Langs.short(c.tgt)}",
+                    "${c.pageCount} sayfa · ${Langs.short(c.src)} → ${Langs.short(c.tgt)}" +
+                        (c.category?.let { " · $it" } ?: ""),
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
@@ -256,6 +293,14 @@ private fun ChapterCard(
             Box {
                 IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "Seçenekler") }
                 DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Düzenle") },
+                        leadingIcon = { Icon(Icons.Filled.Edit, contentDescription = null) },
+                        onClick = {
+                            menu = false
+                            onEdit()
+                        },
+                    )
                     if (!active && c.resumable) {
                         DropdownMenuItem(
                             text = { Text("Kaldığı yerden devam et") },
@@ -480,7 +525,7 @@ fun NewChapterScreen(
 }
 
 @Composable
-private fun RowScope.LangPicker(
+fun RowScope.LangPicker(
     label: String,
     value: String,
     options: List<Lang>,
@@ -542,12 +587,10 @@ fun ReaderScreen(vm: MainViewModel, state: UiState, id: String, snack: SnackbarH
         }
     }
 
+    val ctx = LocalContext.current
     Box(Modifier.fillMaxSize().background(bg)) {
-        LazyColumn(
-            modifier = Modifier.fillMaxSize().pointerInput(Unit) {
-                detectTapGestures(onTap = { bars = !bars })
-            },
-        ) {
+        ZoomableBox(Modifier.fillMaxSize(), onTap = { bars = !bars }) { zoom ->
+        LazyColumn(modifier = Modifier.fillMaxSize().then(zoom)) {
             items(pages, key = { it }) { name ->
                 val f = vm.library.file(ch.id, name)
                 // Oran bölüm bilgisinde kayıtlı; eski bölümlerde arka planda okunur (kaydırma takılmasın)
@@ -556,7 +599,7 @@ fun ReaderScreen(vm: MainViewModel, state: UiState, id: String, snack: SnackbarH
                     if (stored == null) value = withContext(Dispatchers.IO) { Library.aspect(f) }
                 }
                 AsyncImage(
-                    model = f,
+                    model = pageRequest(ctx, f),
                     contentDescription = null,
                     contentScale = ContentScale.FillWidth,
                     modifier = Modifier.fillMaxWidth().aspectRatio(ratio),
@@ -570,6 +613,7 @@ fun ReaderScreen(vm: MainViewModel, state: UiState, id: String, snack: SnackbarH
                     modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(32.dp),
                 )
             }
+        }
         }
 
         if (bars) {
