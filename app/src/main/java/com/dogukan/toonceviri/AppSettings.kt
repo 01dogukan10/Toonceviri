@@ -76,6 +76,28 @@ class AppSettings(ctx: Context) {
         _folder.value = uri
     }
 
+    private val _autoUpdate = MutableStateFlow(p.getBoolean("autoUpdate", true))
+    /** İnternete bağlıyken yeni sürümü kendiliğinden indir. */
+    val autoUpdate = _autoUpdate.asStateFlow()
+
+    fun setAutoUpdate(on: Boolean) {
+        p.edit().putBoolean("autoUpdate", on).apply()
+        _autoUpdate.value = on
+    }
+
+    /** Uygulamanın en son açıldığı sürüm (güncelleme sonrası "neler yeni" göstermek için). */
+    var lastVersion: String?
+        get() = p.getString("lastVersion", null)
+        set(v) = p.edit().putString("lastVersion", v).apply()
+
+    /** İndirilen güncellemenin notu; kurulduktan sonra internet olmasa da gösterilebilsin. */
+    fun savePendingNotes(version: String, notes: String) {
+        p.edit().putString("pendingVersion", version).putString("pendingNotes", notes).apply()
+    }
+
+    fun pendingNotes(version: String): String? =
+        if (p.getString("pendingVersion", null) == version) p.getString("pendingNotes", null) else null
+
     fun finishSetup() {
         p.edit().putBoolean("setupDone", true).apply()
         _setupDone.value = true

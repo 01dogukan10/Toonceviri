@@ -122,6 +122,7 @@ fun LibraryScreen(
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 8.dp, bottom = 96.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            state.update?.let { u -> item(key = "update") { UpdateCard(u, onInstall = vm::installUpdate) } }
             state.work?.let { w -> item(key = "work") { WorkCard(w, onCancel = vm::cancel) } }
 
             if (state.chapters.isEmpty() && state.work == null) {

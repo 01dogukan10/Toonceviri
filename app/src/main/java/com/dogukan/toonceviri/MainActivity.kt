@@ -63,6 +63,12 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        // Uygulamaya dönüldüğünde yeni sürüm var mı bak (otomatik güncelleme açıksa, saatte en fazla bir kez)
+        vm.checkUpdates(manual = false)
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         handleShare(intent)
@@ -178,6 +184,21 @@ fun App(vm: MainViewModel) {
     if (!setupDone) {
         SetupScreen(vm, state)
         return
+    }
+
+    // Yeni sürüm indirildi: neler değiştiğini göster, tek dokunuşla kur
+    val upd = state.update
+    if (state.updateDialog && upd?.file != null) {
+        UpdateReadyDialog(
+            u = upd,
+            current = vm.updater.currentVersion,
+            onInstall = vm::installUpdate,
+            onLater = vm::dismissUpdateDialog,
+        )
+    }
+    // Güncellemeden sonraki ilk açılış: bu sürümde neler değişti
+    state.whatsNew?.let { (version, notes) ->
+        if (!state.updateDialog) WhatsNewDialog(version, notes, onClose = vm::dismissWhatsNew)
     }
 
     when {

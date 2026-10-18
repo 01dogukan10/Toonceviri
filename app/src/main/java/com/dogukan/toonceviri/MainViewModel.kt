@@ -33,6 +33,9 @@ import java.util.concurrent.TimeUnit
 
 data class WorkState(val title: String, val done: Int, val total: Int, val status: String)
 
+/** İndirilmekte olan ya da kurulmaya hazır güncelleme. */
+data class UpdateState(val info: UpdateInfo, val progress: Float, val file: File?)
+
 data class UiState(
     val chapters: List<Chapter> = emptyList(),
     val work: WorkState? = null,
@@ -42,6 +45,11 @@ data class UiState(
     val models: List<ModelStatus> = emptyList(),
     /** Şu an indirilen / silinen dil kodları */
     val modelBusy: Set<String> = emptySet(),
+    val update: UpdateState? = null,
+    /** "Güncelleme hazır" penceresi açık mı */
+    val updateDialog: Boolean = false,
+    /** Güncellemeden sonra gösterilecek not: sürüm → değişiklikler */
+    val whatsNew: Pair<String, String>? = null,
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
@@ -66,6 +74,8 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     var draftTitle by mutableStateOf("")
 
     private var job: Job? = null
+    private var updateJob: Job? = null
+    val updater = Updater(app, http)
 
     var srcLang: String
         get() = prefs.getString("src", TranslateLanguage.ENGLISH) ?: TranslateLanguage.ENGLISH
@@ -78,7 +88,87 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     init {
         refresh()
         refreshModels()
+        showWhatsNewIfUpdated()
+        checkUpdates(manual = false)
     }
+
+    // ---------------- Otomatik güncelleme ----------------
+
+    /** GitHub'da yeni sürüm varsa APK'yı arka planda indirir, bitince "Güncelleme hazır" penceresini açar. */
+    private var lastAutoCheck = 0L
+
+    fun checkUpdates(manual: Boolean) {
+        if (!manual && !settings.autoUpdate.value) return
+        // Uygulamaya her dönüşte denetlenir ama en fazla saatte bir
+        if (!manual) {
+            val now = System.currentTimeMillis()
+            if (now - lastAutoCheck < 60 * 60 * 1000L && _state.value.update == null) return
+            lastAutoCheck = now
+        }
+        if (updateJob?.isActive == true) {
+            if (manual) msg("Güncelleme zaten indiriliyor")
+            return
+        }
+        // Güncelleme zaten indirildiyse: elle denetlemede pencereyi tekrar aç, otomatikte rahatsız etme
+        if (_state.value.update?.file != null) {
+            if (manual) _state.update { it.copy(updateDialog = true) }
+            return
+        }
+        updateJob = viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val info = updater.checkLatest()
+                if (info == null) {
+                    if (manual) msg("En güncel sürümü kullanıyorsun (${updater.currentVersion})")
+                    return@launch
+                }
+                settings.savePendingNotes(info.version, info.notes)
+                _state.update { it.copy(update = UpdateState(info, 0f, null)) }
+                var lastPct = -1
+                val file = updater.download(info) { p ->
+                    val pct = (p * 100).toInt()
+                    if (pct != lastPct) {
+                        lastPct = pct
+                        _state.update { s -> s.copy(update = s.update?.copy(progress = p)) }
+                    }
+                }
+                _state.update { it.copy(update = UpdateState(info, 1f, file), updateDialog = true) }
+            } catch (e: Exception) {
+                // İnternet yoksa otomatik denetim sessizce vazgeçer
+                _state.update { s -> if (s.update?.file == null) s.copy(update = null) else s }
+                if (manual) msg("Güncelleme denetlenemedi: ${e.message ?: "bağlantı yok"}")
+            }
+        }
+    }
+
+    fun dismissUpdateDialog() = _state.update { it.copy(updateDialog = false) }
+
+    /** Android'in kurulum ekranını açar (ilk seferde "bilinmeyen uygulamalar" izni istenir). */
+    fun installUpdate() {
+        val file = _state.value.update?.file ?: return
+        val ctx = getApplication<Application>()
+        _state.update { it.copy(updateDialog = false) }
+        if (!updater.canInstall()) {
+            msg("Bu uygulamaya kurulum izni ver, sonra tekrar Güncelle'ye bas")
+            ctx.startActivity(updater.permissionIntent())
+            return
+        }
+        ctx.startActivity(updater.installIntent(file))
+    }
+
+    private fun showWhatsNewIfUpdated() {
+        val current = updater.currentVersion
+        val last = settings.lastVersion
+        settings.lastVersion = current
+        // İlk kurulumda gösterme; 0.12'den gelenlerde "lastVersion" henüz yok ama kurulum tamamlanmış
+        val updated = if (last == null) settings.setupDone.value else last != current
+        if (!updated) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val notes = settings.pendingNotes(current) ?: updater.notesFor(current) ?: return@launch
+            _state.update { it.copy(whatsNew = current to notes) }
+        }
+    }
+
+    fun dismissWhatsNew() = _state.update { it.copy(whatsNew = null) }
 
     // ---------------- Dil modelleri ----------------
 

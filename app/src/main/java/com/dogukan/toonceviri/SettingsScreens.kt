@@ -257,6 +257,22 @@ fun SettingsScreen(
             )
 
             HorizontalDivider()
+            Section("Güncelleme")
+            val autoUpdate by vm.settings.autoUpdate.collectAsStateWithLifecycle()
+            ListItem(
+                headlineContent = { Text("Otomatik güncelleme") },
+                supportingContent = { Text("İnternete bağlıyken yeni sürümü kendiliğinden indirir; kurulum tek dokunuşla") },
+                trailingContent = {
+                    Switch(checked = autoUpdate, onCheckedChange = { vm.settings.setAutoUpdate(it) })
+                },
+            )
+            ListItem(
+                headlineContent = { Text("Güncellemeleri denetle") },
+                supportingContent = { Text("Şu anki sürüm: ${vm.updater.currentVersion}") },
+                modifier = Modifier.clickable { vm.checkUpdates(manual = true) },
+            )
+
+            HorizontalDivider()
             Section("Diller")
             ListItem(
                 headlineContent = { Text("Dil modelleri") },
