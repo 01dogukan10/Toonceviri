@@ -8,8 +8,10 @@ import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.Surface
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
@@ -22,7 +24,10 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -36,7 +41,12 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
         handleShare(intent)
         setContent {
-            AppTheme { App(vm) }
+            val theme by vm.settings.theme.collectAsStateWithLifecycle()
+            AppTheme(theme) {
+                Surface(Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
+                    App(vm)
+                }
+            }
         }
     }
 
@@ -52,17 +62,61 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-private val Accent = Color(0xFF5B3FE0)
+/** Seçilen vurgu renginden açık / koyu renk şeması üretir. */
+private fun accentScheme(accent: Color, dark: Boolean): ColorScheme =
+    if (dark) {
+        val p = lerp(accent, Color.White, 0.35f)
+        darkColorScheme(
+            primary = p,
+            onPrimary = if (p.luminanceSafe() > 0.5f) Color.Black else Color.White,
+            primaryContainer = lerp(accent, Color.Black, 0.55f),
+            onPrimaryContainer = lerp(accent, Color.White, 0.85f),
+            secondary = p,
+            secondaryContainer = lerp(accent, Color.Black, 0.65f),
+            onSecondaryContainer = lerp(accent, Color.White, 0.85f),
+            tertiary = p,
+        )
+    } else {
+        lightColorScheme(
+            primary = accent,
+            onPrimary = if (accent.luminanceSafe() > 0.5f) Color.Black else Color.White,
+            primaryContainer = lerp(accent, Color.White, 0.8f),
+            onPrimaryContainer = lerp(accent, Color.Black, 0.6f),
+            secondary = accent,
+            secondaryContainer = lerp(accent, Color.White, 0.85f),
+            onSecondaryContainer = lerp(accent, Color.Black, 0.6f),
+            tertiary = accent,
+        )
+    }
+
+private fun Color.luminanceSafe(): Float = 0.299f * red + 0.587f * green + 0.114f * blue
+
+/** AMOLED: arka planlar tam siyah, kartlar çok koyu gri. */
+private fun ColorScheme.amoled(): ColorScheme = copy(
+    background = Color.Black,
+    surface = Color.Black,
+    surfaceContainerLowest = Color.Black,
+    surfaceContainerLow = Color(0xFF080808),
+    surfaceContainer = Color(0xFF0E0E0E),
+    surfaceContainerHigh = Color(0xFF141414),
+    surfaceContainerHighest = Color(0xFF1A1A1A),
+    surfaceVariant = Color(0xFF1A1A1A),
+)
 
 @Composable
-fun AppTheme(content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
+fun AppTheme(t: ThemeSettings, content: @Composable () -> Unit) {
     val ctx = LocalContext.current
-    val scheme = when {
-        Build.VERSION.SDK_INT >= 31 -> if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
-        dark -> darkColorScheme(primary = Color(0xFFB9A8FF))
-        else -> lightColorScheme(primary = Accent)
+    val dark = when (t.mode) {
+        ThemeMode.SYSTEM -> isSystemInDarkTheme()
+        ThemeMode.LIGHT -> false
+        ThemeMode.DARK, ThemeMode.AMOLED -> true
     }
+    var scheme = if (t.dynamic && Build.VERSION.SDK_INT >= 31) {
+        if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)
+    } else {
+        accentScheme(Color(t.accent), dark)
+    }
+    if (t.mode == ThemeMode.AMOLED) scheme = scheme.amoled()
     MaterialTheme(colorScheme = scheme, content = content)
 }
 
@@ -70,6 +124,7 @@ fun AppTheme(content: @Composable () -> Unit) {
 fun App(vm: MainViewModel) {
     val state by vm.state.collectAsStateWithLifecycle()
     val shared by vm.sharedUrl.collectAsStateWithLifecycle()
+    val setupDone by vm.settings.setupDone.collectAsStateWithLifecycle()
     var route by rememberSaveable { mutableStateOf("lib") }
     val snack = remember { SnackbarHostState() }
 
@@ -90,9 +145,16 @@ fun App(vm: MainViewModel) {
         onDispose { }
     }
 
+    // Yalnızca ilk açılışta: kayıt klasörü + Türkçe modeli
+    if (!setupDone) {
+        SetupScreen(vm, state)
+        return
+    }
+
     when {
         route == "new" -> NewChapterScreen(
             vm = vm,
+            state = state,
             initialUrl = shared,
             snack = snack,
             onBack = {
@@ -103,6 +165,21 @@ fun App(vm: MainViewModel) {
                 vm.sharedUrl.value = null
                 route = "lib"
             },
+            onModels = { route = "models" },
+        )
+
+        route == "settings" -> SettingsScreen(
+            vm = vm,
+            snack = snack,
+            onBack = { route = "lib" },
+            onModels = { route = "models" },
+        )
+
+        route == "models" -> ModelsScreen(
+            vm = vm,
+            state = state,
+            snack = snack,
+            onBack = { route = "settings" },
         )
 
         route.startsWith("read:") -> ReaderScreen(
@@ -118,6 +195,7 @@ fun App(vm: MainViewModel) {
             snack = snack,
             onNew = { route = "new" },
             onOpen = { route = "read:$it" },
+            onSettings = { route = "settings" },
         )
     }
 }

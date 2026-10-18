@@ -80,9 +80,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           V=${{ steps.ver.outputs.version }}
-          PRE=""
-          if [ "${V%%.*}" = "0" ]; then PRE="--prerelease"; fi
           gh release create "v$V" "out/ToonCeviri-v$V.apk" \
             --title "ToonÇeviri $V" \
             --notes-file RELEASE_NOTES.md \
-            --target "$GITHUB_SHA" $PRE
+            --target "$GITHUB_SHA"

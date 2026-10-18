@@ -1,12 +1,18 @@
 package com.dogukan.toonceviri
 
+import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.net.Uri
+import androidx.documentfile.provider.DocumentFile
 import org.json.JSONArray
 import org.json.JSONObject
+import java.io.BufferedOutputStream
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Locale
+import java.util.zip.ZipEntry
+import java.util.zip.ZipOutputStream
 import kotlin.math.min
 
 data class Chapter(
@@ -96,6 +102,33 @@ class Library(private val root: File) {
             part++
         }
         return names
+    }
+
+    /**
+     * Çevrilen sayfaları kullanıcının seçtiği klasöre "<başlık> [TR].cbz" olarak yazar.
+     * CBZ, sayfaların sırayla durduğu bir zip dosyasıdır; çoğu çizgi roman okuyucusu açar.
+     */
+    fun exportCbz(ctx: Context, c: Chapter, tree: Uri): String {
+        val dir = DocumentFile.fromTreeUri(ctx, tree)
+            ?.takeIf { it.canWrite() }
+            ?: throw IllegalStateException("Kayıt klasörüne yazılamıyor, Ayarlar'dan klasörü yeniden seç")
+        val safe = c.title.replace(Regex("[\\\\/:*?\"<>|]"), "_").trim().take(80).ifBlank { "Bolum" }
+        val name = "$safe [${c.tgt.uppercase(Locale.ROOT)}].cbz"
+        dir.findFile(name)?.delete()
+        val f = dir.createFile("application/octet-stream", name)
+            ?: throw IllegalStateException("CBZ dosyası oluşturulamadı")
+        val out = ctx.contentResolver.openOutputStream(f.uri)
+            ?: throw IllegalStateException("CBZ dosyası açılamadı")
+        ZipOutputStream(BufferedOutputStream(out)).use { zip ->
+            // JPEG zaten sıkıştırılmış; tekrar sıkıştırmak sadece yavaşlatır
+            zip.setLevel(0)
+            c.translated.forEachIndexed { i, n ->
+                zip.putNextEntry(ZipEntry(String.format(Locale.US, "%04d.jpg", i + 1)))
+                file(c.id, n).inputStream().use { it.copyTo(zip) }
+                zip.closeEntry()
+            }
+        }
+        return f.name ?: name
     }
 
     companion object {

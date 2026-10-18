@@ -1,12 +1,20 @@
-## ToonÇeviri 0.10 — ilk deneme sürümü
+## ToonÇeviri 0.11
 
-**Yenilikler**
-- Bölüm linkinden sayfaları indirip çevirme (tarayıcıdan *Paylaş → ToonÇeviri* de çalışır)
-- Galeriden sayfa seçip çevirme
-- Balondaki yazıyı silip çeviriyi balonun içine sığdırarak yazma
-- Kütüphane: çevrilen bölümler cihazda saklanır, internetsiz okunur
-- Okuyucuda orijinal / çeviri arasında geçiş
-- Kaynak dil: İngilizce, Türkçe, Korece, Japonca, Çince ve Latin alfabeli diğer diller
+**Daha küçük uygulama — dil modelleri isteğe bağlı**
+- Türkçe ve İngilizce hazır gelir (Türkçe çeviri modeli ilk açılışta bir kez iner).
+- Korece, Japonca, Çince ve diğer diller artık uygulamanın içinde gelmiyor. **Ayarlar → Dil modelleri** ekranından istediğini indirip silebilirsin.
+- Telefonlarda kullanılmayan işlemci dosyaları APK'dan çıkarıldı; boyut büyük ölçüde küçüldü.
+- Yeni bölüm ekranında indirilmemiş diller "· indirilmedi" olarak işaretlenir ve tek dokunuşla indirme ekranına gidilir.
 
-**Not**
-- İlk çeviride dil modeli (~30 MB) indirilir, sonrası internetsiz çalışır.
+**CBZ olarak kaydetme**
+- Çevrilen her bölüm, seçtiğin klasöre `<başlık> [TR].cbz` olarak kaydedilir.
+- Kayıt klasörü yalnızca uygulama ilk açıldığında sorulur; sonra Ayarlar'dan değiştirilebilir.
+- Eski bölümler için kütüphanede ⋮ → **CBZ olarak kaydet**.
+
+**Tema ayarları**
+- Tema: Sistem / Açık / Koyu / AMOLED siyah
+- 10 farklı vurgu rengi
+- Android 12 ve üstünde duvar kâğıdından renk alma
+- Okuyucu arka planı: Siyah / Koyu gri / Beyaz
+
+**Not:** Korece/Japonca/Çince yazı tanıma Google Play Hizmetleri üzerinden iner.

@@ -32,6 +32,8 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -70,6 +72,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 
 // ======================= Kütüphane =======================
@@ -82,11 +85,19 @@ fun LibraryScreen(
     snack: SnackbarHostState,
     onNew: () -> Unit,
     onOpen: (String) -> Unit,
+    onSettings: () -> Unit,
 ) {
     var toDelete by remember { mutableStateOf<Chapter?>(null) }
 
     Scaffold(
-        topBar = { TopAppBar(title = { Text("ToonÇeviri", fontWeight = FontWeight.Bold) }) },
+        topBar = {
+            TopAppBar(
+                title = { Text("ToonÇeviri", fontWeight = FontWeight.Bold) },
+                actions = {
+                    IconButton(onClick = onSettings) { Icon(Icons.Filled.Settings, contentDescription = "Ayarlar") }
+                },
+            )
+        },
         floatingActionButton = {
             ExtendedFloatingActionButton(
                 onClick = onNew,
@@ -126,6 +137,7 @@ fun LibraryScreen(
                     vm = vm,
                     c = c,
                     onClick = { if (c.translated.isNotEmpty()) onOpen(c.id) },
+                    onExport = { vm.exportChapter(c.id) },
                     onDelete = { toDelete = c },
                 )
             }
@@ -172,7 +184,8 @@ private fun WorkCard(w: WorkState, onCancel: () -> Unit) {
 }
 
 @Composable
-private fun ChapterCard(vm: MainViewModel, c: Chapter, onClick: () -> Unit, onDelete: () -> Unit) {
+private fun ChapterCard(vm: MainViewModel, c: Chapter, onClick: () -> Unit, onExport: () -> Unit, onDelete: () -> Unit) {
+    var menu by remember { mutableStateOf(false) }
     Card(onClick = onClick, modifier = Modifier.fillMaxWidth()) {
         Row(Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
             val thumb = c.translated.firstOrNull()
@@ -208,7 +221,28 @@ private fun ChapterCard(vm: MainViewModel, c: Chapter, onClick: () -> Unit, onDe
                     )
                 }
             }
-            IconButton(onClick = onDelete) { Icon(Icons.Filled.Delete, contentDescription = "Sil") }
+            Box {
+                IconButton(onClick = { menu = true }) { Icon(Icons.Filled.MoreVert, contentDescription = "Seçenekler") }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    if (c.complete) {
+                        DropdownMenuItem(
+                            text = { Text("CBZ olarak kaydet") },
+                            onClick = {
+                                menu = false
+                                onExport()
+                            },
+                        )
+                    }
+                    DropdownMenuItem(
+                        text = { Text("Sil") },
+                        leadingIcon = { Icon(Icons.Filled.Delete, contentDescription = null) },
+                        onClick = {
+                            menu = false
+                            onDelete()
+                        },
+                    )
+                }
+            }
         }
     }
 }
@@ -219,10 +253,12 @@ private fun ChapterCard(vm: MainViewModel, c: Chapter, onClick: () -> Unit, onDe
 @Composable
 fun NewChapterScreen(
     vm: MainViewModel,
+    state: UiState,
     initialUrl: String?,
     snack: SnackbarHostState,
     onBack: () -> Unit,
     onStarted: () -> Unit,
+    onModels: () -> Unit,
 ) {
     var url by rememberSaveable { mutableStateOf(initialUrl ?: "") }
     var title by rememberSaveable { mutableStateOf("") }
@@ -234,6 +270,11 @@ fun NewChapterScreen(
     }
 
     val sameLang = src == tgt
+    // Kaynak için çeviri + yazı tanıma, hedef için yalnızca çeviri modeli gerekir
+    val readySrc = state.models.filter { it.ready }.map { it.lang.code }.toSet()
+    val readyTgt = state.models.filter { it.translate }.map { it.lang.code }.toSet()
+    val loaded = state.models.isNotEmpty()
+    val missing = loaded && (src !in readySrc || tgt !in readyTgt)
     fun saveLangs() {
         vm.srcLang = src
         vm.tgtLang = tgt
@@ -287,7 +328,7 @@ fun NewChapterScreen(
             )
 
             Row(verticalAlignment = Alignment.CenterVertically) {
-                LangPicker("Kaynak dil", src, Langs.source) { src = it }
+                LangPicker("Kaynak dil", src, Langs.source, readySrc, loaded) { src = it }
                 TextButton(
                     onClick = {
                         if (Langs.source.any { it.code == tgt }) {
@@ -297,10 +338,22 @@ fun NewChapterScreen(
                         }
                     },
                 ) { Text("⇄", style = MaterialTheme.typography.titleLarge) }
-                LangPicker("Hedef dil", tgt, Langs.target) { tgt = it }
+                LangPicker("Hedef dil", tgt, Langs.target, readyTgt, loaded) { tgt = it }
             }
             if (sameLang) {
                 Text("Kaynak ve hedef dil aynı olamaz.", color = MaterialTheme.colorScheme.error)
+            }
+            if (missing) {
+                Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.errorContainer)) {
+                    Row(Modifier.padding(start = 16.dp, end = 8.dp, top = 4.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text(
+                            "Seçilen dilin modeli indirilmemiş.",
+                            modifier = Modifier.weight(1f),
+                            color = MaterialTheme.colorScheme.onErrorContainer,
+                        )
+                        TextButton(onClick = onModels) { Text("İndir") }
+                    }
+                }
             }
 
             Button(
@@ -309,7 +362,7 @@ fun NewChapterScreen(
                     vm.translateUrl(url.trim(), title.trim())
                     onStarted()
                 },
-                enabled = url.trim().startsWith("http") && !sameLang,
+                enabled = url.trim().startsWith("http") && !sameLang && !missing,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Linkten çevir") }
 
@@ -317,14 +370,15 @@ fun NewChapterScreen(
                 onClick = {
                     picker.launch(PickVisualMediaRequest(ActivityResultContracts.PickVisualMedia.ImageOnly))
                 },
-                enabled = !sameLang,
+                enabled = !sameLang && !missing,
                 modifier = Modifier.fillMaxWidth(),
             ) { Text("Galeriden sayfa seç") }
 
             Text(
                 "• Link: bölümün okunduğu sayfanın adresi. Sayfadaki resimler indirilip sırayla çevrilir.\n" +
                     "• Bazı siteler resimleri JavaScript ile yükler; o zaman ekran görüntüsü alıp galeriden seç.\n" +
-                    "• İlk çeviride dil modeli (~30 MB) iner, sonra her şey internetsiz çalışır.\n" +
+                    "• Türkçe ve İngilizce hazırdır; diğer diller Ayarlar → Dil modelleri'nden iner.\n" +
+                    "• Bitince bölüm, seçtiğin klasöre CBZ olarak da kaydedilir.\n" +
                     "• Çeviri sürerken uygulamayı açık tut.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -334,7 +388,14 @@ fun NewChapterScreen(
 }
 
 @Composable
-private fun RowScope.LangPicker(label: String, value: String, options: List<Lang>, onPick: (String) -> Unit) {
+private fun RowScope.LangPicker(
+    label: String,
+    value: String,
+    options: List<Lang>,
+    ready: Set<String>,
+    loaded: Boolean,
+    onPick: (String) -> Unit,
+) {
     var open by remember { mutableStateOf(false) }
     Box(Modifier.weight(1f)) {
         OutlinedButton(onClick = { open = true }, modifier = Modifier.fillMaxWidth()) {
@@ -346,7 +407,9 @@ private fun RowScope.LangPicker(label: String, value: String, options: List<Lang
         DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
             options.forEach { l ->
                 DropdownMenuItem(
-                    text = { Text(l.name) },
+                    text = {
+                        Text(if (!loaded || l.code in ready) l.name else "${l.name}  · indirilmedi")
+                    },
                     onClick = {
                         onPick(l.code)
                         open = false
@@ -371,8 +434,10 @@ fun ReaderScreen(vm: MainViewModel, state: UiState, id: String, onBack: () -> Un
     var showOriginal by rememberSaveable { mutableStateOf(false) }
     var bars by remember { mutableStateOf(true) }
     val pages = if (showOriginal) ch.original else ch.translated
+    val theme by vm.settings.theme.collectAsStateWithLifecycle()
+    val bg = Color(theme.readerBg.argb)
 
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    Box(Modifier.fillMaxSize().background(bg)) {
         LazyColumn(
             modifier = Modifier.fillMaxSize().pointerInput(Unit) {
                 detectTapGestures(onTap = { bars = !bars })

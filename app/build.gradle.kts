@@ -18,6 +18,8 @@ android {
         targetSdk = 34
         versionCode = appVersionCode
         versionName = appVersion
+        // Yalnızca telefon işlemcileri (x86 emülatör kütüphaneleri APK'ya girmesin)
+        ndk { abiFilters += listOf("arm64-v8a", "armeabi-v7a") }
     }
 
     // İmza anahtarı GitHub Secrets'tan gelir (repoda durmaz).
@@ -72,11 +74,14 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jsoup:jsoup:1.18.1")
 
-    // OCR (cihaz içinde, internetsiz)
+    // OCR: Latin (Türkçe, İngilizce vb.) uygulamanın içinde gelir
     implementation("com.google.mlkit:text-recognition:16.0.1")
-    implementation("com.google.mlkit:text-recognition-korean:16.0.1")
-    implementation("com.google.mlkit:text-recognition-japanese:16.0.1")
-    implementation("com.google.mlkit:text-recognition-chinese:16.0.1")
+    // Korece / Japonca / Çince OCR: Google Play Hizmetleri üzerinden, kullanıcı isterse iner
+    implementation("com.google.android.gms:play-services-mlkit-text-recognition-korean:16.0.1")
+    implementation("com.google.android.gms:play-services-mlkit-text-recognition-japanese:16.0.1")
+    implementation("com.google.android.gms:play-services-mlkit-text-recognition-chinese:16.0.1")
+    implementation("com.google.android.gms:play-services-base:18.5.0")
+    implementation("androidx.documentfile:documentfile:1.0.1")
     // Çeviri (dil modeli bir kez iner, sonra internetsiz)
     implementation("com.google.mlkit:translate:17.0.3")
 

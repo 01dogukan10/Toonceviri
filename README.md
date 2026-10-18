@@ -19,7 +19,7 @@ En son APK her zaman **Releases** kısmındadır. İndirip telefona kurman yeter
 ## Sürümleme
 - Sürüm numarası `version.txt` dosyasında, değişiklik notu `RELEASE_NOTES.md` dosyasında tutulur.
 - Her değişiklikte numara artırılır ve notlar güncellenir. Push sonrası Actions APK'yı derler ve yeni bir Release yayınlar.
-- Test dönemi: 0.10, 0.11, 0.12 … (ön sürüm olarak işaretlenir)
+- Test dönemi: 0.10, 0.11, 0.12 …
 - Kararlı sürüm: 1.0, ardından küçük güncellemeler 1.1, 1.2 …
 
 ## Bilinen sınırlar

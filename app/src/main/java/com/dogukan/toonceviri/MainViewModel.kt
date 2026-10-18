@@ -2,6 +2,7 @@ package com.dogukan.toonceviri
 
 import android.app.Application
 import android.content.Context
+import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import android.net.Uri
@@ -30,11 +31,16 @@ data class UiState(
     val chapters: List<Chapter> = emptyList(),
     val work: WorkState? = null,
     val message: String? = null,
+    val models: List<ModelStatus> = emptyList(),
+    /** Şu an indirilen / silinen dil kodları */
+    val modelBusy: Set<String> = emptySet(),
 )
 
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     val library = Library(File(app.filesDir, "chapters"))
+    val settings = AppSettings(app)
+    private val models = ModelManager(app)
     private val prefs = app.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private val http = OkHttpClient.Builder()
         .connectTimeout(20, TimeUnit.SECONDS)
@@ -59,6 +65,79 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         refresh()
+        refreshModels()
+    }
+
+    // ---------------- Dil modelleri ----------------
+
+    fun refreshModels() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val list = runCatching { models.statuses() }.getOrNull() ?: return@launch
+            _state.update { it.copy(models = list) }
+        }
+    }
+
+    fun downloadModel(code: String, quiet: Boolean = false) {
+        if (code in _state.value.modelBusy) return
+        _state.update { it.copy(modelBusy = it.modelBusy + code) }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                models.download(code)
+                if (!quiet) msg("${Langs.name(code)} indirildi")
+            } catch (e: Exception) {
+                msg("${Langs.name(code)} indirilemedi: ${e.message ?: "bağlantı hatası"}")
+            } finally {
+                _state.update { it.copy(modelBusy = it.modelBusy - code) }
+                refreshModels()
+            }
+        }
+    }
+
+    fun deleteModel(code: String) {
+        if (code in _state.value.modelBusy) return
+        _state.update { it.copy(modelBusy = it.modelBusy + code) }
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                models.delete(code)
+                msg("${Langs.name(code)} silindi")
+            } catch (e: Exception) {
+                msg("Silinemedi: ${e.message}")
+            } finally {
+                _state.update { it.copy(modelBusy = it.modelBusy - code) }
+                refreshModels()
+            }
+        }
+    }
+
+    // ---------------- Kayıt klasörü ----------------
+
+    fun setFolder(uri: Uri) {
+        val cr = getApplication<Application>().contentResolver
+        runCatching {
+            cr.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
+        }
+        settings.setFolder(uri.toString())
+    }
+
+    /** Var olan bir bölümü elle CBZ olarak kaydet. */
+    fun exportChapter(id: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val c = library.load(id) ?: return@launch
+            val folder = settings.folder.value
+            if (folder == null) {
+                msg("Önce Ayarlar'dan kayıt klasörünü seç")
+                return@launch
+            }
+            try {
+                val name = library.exportCbz(getApplication<Application>(), c, Uri.parse(folder))
+                msg("Kaydedildi: $name")
+            } catch (e: Exception) {
+                msg("CBZ kaydedilemedi: ${e.message}")
+            }
+        }
     }
 
     fun refresh() {
@@ -142,6 +221,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun runChapter(name: String, source: String, loaders: List<() -> Bitmap?>) {
         val src = srcLang
         val tgt = tgtLang
+        val missing = buildList {
+            if (!models.isReady(src, asSource = true)) add(Langs.name(src))
+            if (!models.isReady(tgt, asSource = false)) add(Langs.name(tgt))
+        }
+        if (missing.isNotEmpty()) {
+            throw IllegalStateException(
+                "Önce Ayarlar → Dil modelleri'nden indir: ${missing.joinToString()}"
+            )
+        }
         val total = loaders.size
         val now = System.currentTimeMillis()
         var ch = Chapter(
@@ -189,8 +277,24 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             library.delete(ch.id)
             throw IllegalStateException("Hiçbir sayfa çevrilemedi")
         }
-        library.save(ch.copy(complete = true))
-        msg("\"$name\" hazır (${ch.pageCount} sayfa)")
+        ch = ch.copy(complete = true)
+        library.save(ch)
+
+        // Seçilen klasöre CBZ olarak da kaydet
+        val folder = settings.folder.value
+        val saved = if (folder == null) null else {
+            progress(name, total, total, "CBZ olarak kaydediliyor…")
+            try {
+                library.exportCbz(getApplication<Application>(), ch, Uri.parse(folder))
+            } catch (e: Exception) {
+                msg("Çeviri hazır ama CBZ kaydedilemedi: ${e.message}")
+                return
+            }
+        }
+        msg(
+            if (saved != null) "\"$name\" hazır (${ch.pageCount} sayfa) · $saved kaydedildi"
+            else "\"$name\" hazır (${ch.pageCount} sayfa)"
+        )
     }
 
     private fun decode(bytes: ByteArray): Bitmap? {
