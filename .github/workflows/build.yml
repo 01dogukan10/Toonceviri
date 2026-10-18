@@ -61,8 +61,9 @@ jobs:
           gradle assembleRelease --no-daemon 2>&1 | tee build.log
           code=${PIPESTATUS[0]}
           if [ $code -ne 0 ]; then
-            msg=$(grep -A12 "What went wrong" build.log | head -14 | sed ':a;N;$!ba;s/\n/%0A/g')
-            [ -z "$msg" ] && msg=$(grep -m5 "^e: " build.log | sed ':a;N;$!ba;s/\n/%0A/g')
+            # Kotlin derleme hataları ("e: ...") önce; yoksa Gradle'ın özeti
+            msg=$(grep -m12 "^e: " build.log | sed 's#^e: file://[^ ]*/toonceviri/##' | sed ':a;N;$!ba;s/\n/%0A/g')
+            [ -z "$msg" ] && msg=$(grep -A12 "What went wrong" build.log | head -14 | sed ':a;N;$!ba;s/\n/%0A/g')
             echo "::error::$msg"
           fi
           exit $code

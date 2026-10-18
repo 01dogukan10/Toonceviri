@@ -346,6 +346,7 @@ fun PageEditorScreen(
         }
     }
     val pageNo = ch.pages.indexOf(page) + 1
+    val list = bubbles.orEmpty()
 
     Scaffold(
         topBar = {
@@ -385,7 +386,6 @@ fun PageEditorScreen(
                 )
             }
 
-            val list = bubbles.orEmpty()
             val boxColor = MaterialTheme.colorScheme.primary
             LazyColumn(Modifier.fillMaxSize()) {
                 itemsIndexed(pieces, key = { _, n -> "$n#$version" }) { k, name ->
