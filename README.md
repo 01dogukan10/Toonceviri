@@ -14,9 +14,13 @@ OpenToon tarzı, tamamen ücretsiz ve cihaz içinde çalışan manga / manhwa / 
 - İlk çeviride dil modeli (~30 MB) indirilir, sonrası internetsiz.
 
 ## APK alma
-1. Bu klasörü yeni bir GitHub reposuna yükle.
-2. **Actions** sekmesinde "APK derle" işi otomatik çalışır.
-3. Bittiğinde **Artifacts → ToonCeviri-apk** dosyasını indir, zipten çıkar, telefona kur.
+En son APK her zaman **Releases** kısmındadır. İndirip telefona kurman yeterli. Yeni sürümler eskisinin üstüne güncelleme olarak kurulur.
+
+## Sürümleme
+- Sürüm numarası `version.txt` dosyasında, değişiklik notu `RELEASE_NOTES.md` dosyasında tutulur.
+- Her değişiklikte numara artırılır ve notlar güncellenir. Push sonrası Actions APK'yı derler ve yeni bir Release yayınlar.
+- Test dönemi: 0.10, 0.11, 0.12 … (ön sürüm olarak işaretlenir)
+- Kararlı sürüm: 1.0, ardından küçük güncellemeler 1.1, 1.2 …
 
 ## Bilinen sınırlar
 - Resimleri JavaScript ile yükleyen sitelerde linkten çekme çalışmaz; galeri yolunu kullan.

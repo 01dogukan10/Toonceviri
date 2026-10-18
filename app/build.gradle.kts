@@ -4,6 +4,10 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Sürüm numarası kök klasördeki version.txt'den okunur (ör. 0.10, 0.11, 1.0, 1.1)
+val appVersion = rootProject.file("version.txt").readText().trim()
+val appVersionCode = appVersion.split(".").let { p -> p[0].toInt() * 1000 + p.getOrElse(1) { "0" }.toInt() }
+
 android {
     namespace = "com.dogukan.toonceviri"
     compileSdk = 34
@@ -12,14 +16,31 @@ android {
         applicationId = "com.dogukan.toonceviri"
         minSdk = 24
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = appVersionCode
+        versionName = appVersion
+    }
+
+    // İmza anahtarı GitHub Secrets'tan gelir (repoda durmaz).
+    // Her derlemede aynı imza → yeni sürüm eskisinin üstüne güncelleme olarak kurulur.
+    val keystorePath = System.getenv("SIGNING_KEYSTORE")
+    val keystorePass = System.getenv("SIGNING_PASSWORD")
+    val hasKey = !keystorePath.isNullOrBlank() && !keystorePass.isNullOrBlank()
+
+    signingConfigs {
+        if (hasKey) {
+            create("app") {
+                storeFile = file(keystorePath!!)
+                storePassword = keystorePass
+                keyAlias = "toonceviri"
+                keyPassword = keystorePass
+            }
+        }
     }
 
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = signingConfigs.getByName(if (hasKey) "app" else "debug")
         }
     }
     compileOptions {

@@ -1,14 +1,29 @@
-name: APK derle
+name: APK derle ve yayınla
 
 on:
   push:
+    branches: [main]
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Sürümü oku
+        id: ver
+        run: |
+          V=$(tr -d '[:space:]' < version.txt)
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          if git ls-remote --exit-code --tags origin "refs/tags/v$V" > /dev/null; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
 
       - uses: actions/setup-java@v4
         with:
@@ -19,10 +34,45 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      - name: İmza anahtarını hazırla
+        id: sign
+        env:
+          SIGNING_KEY: ${{ secrets.SIGNING_KEY }}
+        run: |
+          if [ -n "$SIGNING_KEY" ]; then
+            echo "$SIGNING_KEY" | base64 -d > "$RUNNER_TEMP/toonceviri.jks"
+            echo "SIGNING_KEYSTORE=$RUNNER_TEMP/toonceviri.jks" >> "$GITHUB_ENV"
+            echo "SIGNED=true" >> "$GITHUB_ENV"
+          else
+            echo "::warning::SIGNING_KEY secret yok, geçici imza kullanılıyor (güncelleme olarak kurulmaz)"
+          fi
+
       - name: APK derle
-        run: gradle assembleDebug --no-daemon --stacktrace
+        env:
+          SIGNING_PASSWORD: ${{ secrets.SIGNING_PASSWORD }}
+        run: gradle assembleRelease --no-daemon --stacktrace
+
+      - name: APK'yı adlandır
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/release/*.apk "out/ToonCeviri-v${{ steps.ver.outputs.version }}.apk"
 
       - uses: actions/upload-artifact@v4
         with:
-          name: ToonCeviri-apk
-          path: app/build/outputs/apk/debug/*.apk
+          name: ToonCeviri-v${{ steps.ver.outputs.version }}
+          path: out/*.apk
+
+      # Yeni sürüm numarasıysa Releases kısmına APK + değişiklik notuyla yayınla
+      - name: Release oluştur
+        # Yalnızca sabit imzalı APK yayınlanır; yoksa güncelleme olarak kurulamaz
+        if: steps.ver.outputs.exists == 'false' && env.SIGNED == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          V=${{ steps.ver.outputs.version }}
+          PRE=""
+          if [ "${V%%.*}" = "0" ]; then PRE="--prerelease"; fi
+          gh release create "v$V" "out/ToonCeviri-v$V.apk" \
+            --title "ToonÇeviri $V" \
+            --notes-file RELEASE_NOTES.md \
+            --target "$GITHUB_SHA" $PRE
