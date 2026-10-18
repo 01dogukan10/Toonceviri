@@ -1,6 +1,6 @@
 # ToonÇeviri
 
-OpenToon tarzı, tamamen ücretsiz ve cihaz içinde çalışan manga / manhwa / webtoon çevirici.
+Tamamen ücretsiz ve cihaz içinde çalışan manga / manhwa / webtoon çevirici.
 
 ## Ne yapıyor?
 - **Linkten bölüm çekme:** Bölüm sayfasının linkini yapıştır (ya da tarayıcıdan *Paylaş → ToonÇeviri*). Sayfadaki resimler indirilir.
