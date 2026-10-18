@@ -57,11 +57,6 @@ jobs:
           mkdir -p out
           cp app/build/outputs/apk/release/*.apk "out/ToonCeviri-v${{ steps.ver.outputs.version }}.apk"
 
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ToonCeviri-v${{ steps.ver.outputs.version }}
-          path: out/*.apk
-
       # Yeni sürüm numarasıysa Releases kısmına APK + değişiklik notuyla yayınla
       - name: Release oluştur
         # Yalnızca sabit imzalı APK yayınlanır; yoksa güncelleme olarak kurulamaz
