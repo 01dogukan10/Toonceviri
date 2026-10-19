@@ -266,6 +266,18 @@ fun SettingsScreen(
                     Switch(checked = autoUpdate, onCheckedChange = { vm.settings.setAutoUpdate(it) })
                 },
             )
+            val wifiOnly by vm.settings.wifiOnly.collectAsStateWithLifecycle()
+            ListItem(
+                headlineContent = { Text("Sadece Wi‑Fi'de indir") },
+                supportingContent = { Text("Mobil veride otomatik güncelleme inmez (~56 MB). Elle denetleme her zaman çalışır.") },
+                trailingContent = {
+                    Switch(
+                        checked = wifiOnly,
+                        enabled = autoUpdate,
+                        onCheckedChange = { vm.settings.setWifiOnly(it) },
+                    )
+                },
+            )
             ListItem(
                 headlineContent = { Text("Güncellemeleri denetle") },
                 supportingContent = { Text("Şu anki sürüm: ${vm.updater.currentVersion}") },

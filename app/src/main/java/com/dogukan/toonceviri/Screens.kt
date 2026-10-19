@@ -30,6 +30,7 @@ import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
@@ -135,7 +136,11 @@ fun LibraryScreen(
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             state.update?.let { u -> item(key = "update") { UpdateCard(u, onInstall = vm::installUpdate) } }
-            state.work?.let { w -> item(key = "work") { WorkCard(w, onCancel = vm::cancel) } }
+            state.work?.let { w ->
+                item(key = "work") {
+                    WorkCard(w, state.queued, onCancel = vm::cancel, onClearQueue = vm::clearQueue)
+                }
+            }
 
             if (state.chapters.isEmpty() && state.work == null) {
                 item(key = "empty") {
@@ -174,7 +179,7 @@ fun LibraryScreen(
                     vm = vm,
                     c = c,
                     active = state.activeId == c.id,
-                    busy = state.work != null,
+                    busy = false,
                     onClick = { if (c.translated.isNotEmpty()) onOpen(c.id) },
                     onExport = { vm.exportChapter(c.id) },
                     onEdit = { onEdit(c.id) },
@@ -206,7 +211,7 @@ fun LibraryScreen(
 }
 
 @Composable
-private fun WorkCard(w: WorkState, onCancel: () -> Unit) {
+private fun WorkCard(w: WorkState, queued: List<String>, onCancel: () -> Unit, onClearQueue: () -> Unit) {
     Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
         Column(Modifier.padding(16.dp)) {
             Text(w.title, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -221,8 +226,18 @@ private fun WorkCard(w: WorkState, onCancel: () -> Unit) {
             } else {
                 LinearProgressIndicator(Modifier.fillMaxWidth())
             }
+            if (queued.isNotEmpty()) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Sırada (${queued.size}): " + queued.joinToString(", "),
+                    style = MaterialTheme.typography.bodySmall,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
-                TextButton(onClick = onCancel) { Text("İptal") }
+                if (queued.isNotEmpty()) TextButton(onClick = onClearQueue) { Text("Sırayı temizle") }
+                TextButton(onClick = onCancel) { Text("Bunu iptal et") }
             }
         }
     }
@@ -516,7 +531,7 @@ fun NewChapterScreen(
                     "• Bazı siteler resimleri JavaScript ile yükler; o zaman sayfaları indirip CBZ/ZIP yap ya da galeriden seç.\n" +
                     "• Türkçe ve İngilizce hazırdır; diğer diller Ayarlar → Dil modelleri'nden iner.\n" +
                     "• Bitince bölüm, seçtiğin klasöre CBZ olarak da kaydedilir.\n" +
-                    "• Çeviri sürerken uygulamayı açık tut.",
+                    "• Çeviri sürerken başka bölüm eklersen sıraya girer. Bildirim çubuğundan ilerlemeyi takip edebilirsin.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
@@ -588,9 +603,16 @@ fun ReaderScreen(vm: MainViewModel, state: UiState, id: String, snack: SnackbarH
     }
 
     val ctx = LocalContext.current
+    val listState = rememberLazyListState()
+    val active = state.activeId == ch.id
     Box(Modifier.fillMaxSize().background(bg)) {
-        ZoomableBox(Modifier.fillMaxSize(), onTap = { bars = !bars }) { zoom ->
-        LazyColumn(modifier = Modifier.fillMaxSize().then(zoom)) {
+        ZoomableBox(
+            modifier = Modifier.fillMaxSize(),
+            listState = listState,
+            resetKey = showOriginal,
+            onTap = { bars = !bars },
+        ) { zoom ->
+        LazyColumn(state = listState, modifier = Modifier.fillMaxSize().then(zoom)) {
             items(pages, key = { it }) { name ->
                 val f = vm.library.file(ch.id, name)
                 // Oran bölüm bilgisinde kayıtlı; eski bölümlerde arka planda okunur (kaydırma takılmasın)
@@ -607,7 +629,12 @@ fun ReaderScreen(vm: MainViewModel, state: UiState, id: String, snack: SnackbarH
             }
             item(key = "end") {
                 Text(
-                    if (ch.complete) "— Bölüm sonu —" else "Çeviri sürüyor…",
+                    when {
+                        ch.complete -> "— Bölüm sonu —"
+                        active -> "Çeviri sürüyor…"
+                        ch.resumable -> "Bölüm yarım kaldı · kütüphanede ⋮ → Kaldığı yerden devam et"
+                        else -> "Bölüm yarım kaldı"
+                    },
                     color = Color.Gray,
                     textAlign = TextAlign.Center,
                     modifier = Modifier.fillMaxWidth().navigationBarsPadding().padding(32.dp),

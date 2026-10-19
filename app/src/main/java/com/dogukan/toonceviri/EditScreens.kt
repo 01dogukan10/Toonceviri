@@ -91,12 +91,17 @@ fun EditChapterScreen(
 ) {
     val ch = state.chapters.firstOrNull { it.id == id }
     BackHandler(onBack = onBack)
+    // Sayfa sırası/silme değiştiyse CBZ, ekrandan çıkınca bir kez güncellenir
+    DisposableEffect(id) { onDispose { vm.syncCbz(id) } }
     if (ch == null) {
         LaunchedEffect(id) { onBack() }
         return
     }
     val ctx = LocalContext.current
     val active = state.activeId == id
+    // Bir düzenleme işlemi sürerken düğmeler kapalı (art arda basınca sayfalar karışmasın)
+    val busy = id in state.editBusy
+    val locked = active || busy
 
     var title by rememberSaveable(id) { mutableStateOf(ch.title) }
     var category by rememberSaveable(id) { mutableStateOf(ch.category ?: "") }
@@ -123,8 +128,10 @@ fun EditChapterScreen(
         },
         snackbarHost = { SnackbarHost(snack) },
     ) { pad ->
+        Column(Modifier.fillMaxSize().padding(pad)) {
+        if (busy) LinearProgressIndicator(Modifier.fillMaxWidth()) else Spacer(Modifier.height(4.dp))
         LazyColumn(
-            Modifier.fillMaxSize().padding(pad),
+            Modifier.fillMaxSize(),
             contentPadding = PaddingValues(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
@@ -150,7 +157,7 @@ fun EditChapterScreen(
                     onValueChange = { title = it },
                     label = { Text("Başlık") },
                     singleLine = true,
-                    enabled = !active,
+                    enabled = !locked,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -161,7 +168,7 @@ fun EditChapterScreen(
                     label = { Text("Kategori (ör. seri adı)") },
                     placeholder = { Text("Boş bırakırsan kategorisiz") },
                     singleLine = true,
-                    enabled = !active,
+                    enabled = !locked,
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -172,7 +179,7 @@ fun EditChapterScreen(
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
                     ) {
                         categories.forEach { c ->
-                            AssistChip(onClick = { category = c }, label = { Text(c) }, enabled = !active)
+                            AssistChip(onClick = { category = c }, label = { Text(c) }, enabled = !locked)
                         }
                     }
                 }
@@ -180,7 +187,7 @@ fun EditChapterScreen(
             item {
                 Button(
                     onClick = { vm.saveDetails(id, title, category) },
-                    enabled = !active && detailsChanged && title.isNotBlank(),
+                    enabled = !locked && detailsChanged && title.isNotBlank(),
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Bilgileri kaydet") }
             }
@@ -200,7 +207,7 @@ fun EditChapterScreen(
             item {
                 OutlinedButton(
                     onClick = { confirmRetranslate = true },
-                    enabled = !active && langChanged && src != tgt && ch.original.isNotEmpty(),
+                    enabled = !locked && langChanged && src != tgt && ch.original.isNotEmpty(),
                     modifier = Modifier.fillMaxWidth(),
                 ) { Text("Bu dillerle yeniden çevir") }
             }
@@ -251,22 +258,23 @@ fun EditChapterScreen(
                             }
                             Spacer(Modifier.width(12.dp))
                             Text("Sayfa ${n + 1}", modifier = Modifier.weight(1f))
-                            IconButton(onClick = { vm.movePage(id, p, -1) }, enabled = !active && n > 0) {
+                            IconButton(onClick = { vm.movePage(id, p, -1) }, enabled = !locked && n > 0) {
                                 Icon(Icons.Filled.KeyboardArrowUp, "Yukarı taşı")
                             }
-                            IconButton(onClick = { vm.movePage(id, p, +1) }, enabled = !active && n < ch.pages.lastIndex) {
+                            IconButton(onClick = { vm.movePage(id, p, +1) }, enabled = !locked && n < ch.pages.lastIndex) {
                                 Icon(Icons.Filled.KeyboardArrowDown, "Aşağı taşı")
                             }
-                            IconButton(onClick = { onEditPage(p) }, enabled = !active) {
+                            IconButton(onClick = { onEditPage(p) }, enabled = !locked) {
                                 Icon(Icons.Filled.Edit, "Çeviriyi düzelt")
                             }
-                            IconButton(onClick = { pageToDelete = p }, enabled = !active && ch.pages.size > 1) {
+                            IconButton(onClick = { pageToDelete = p }, enabled = !locked && ch.pages.size > 1) {
                                 Icon(Icons.Filled.Delete, "Sayfayı sil")
                             }
                         }
                     }
                 }
             }
+        }
         }
     }
 

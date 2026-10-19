@@ -85,6 +85,20 @@ class AppSettings(ctx: Context) {
         _autoUpdate.value = on
     }
 
+    private val _wifiOnly = MutableStateFlow(p.getBoolean("updateWifiOnly", false))
+    /** Otomatik güncelleme yalnızca Wi‑Fi'deyken insin (mobil veri harcamasın). */
+    val wifiOnly = _wifiOnly.asStateFlow()
+
+    fun setWifiOnly(on: Boolean) {
+        p.edit().putBoolean("updateWifiOnly", on).apply()
+        _wifiOnly.value = on
+    }
+
+    /** Bildirim izni bir kez soruldu mu (Android 13+). */
+    var askedNotifications: Boolean
+        get() = p.getBoolean("askedNotif", false)
+        set(v) = p.edit().putBoolean("askedNotif", v).apply()
+
     /** Uygulamanın en son açıldığı sürüm (güncelleme sonrası "neler yeni" göstermek için). */
     var lastVersion: String?
         get() = p.getString("lastVersion", null)

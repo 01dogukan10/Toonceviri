@@ -41,7 +41,14 @@ class ChapterFetcher(private val client: OkHttpClient) {
         return Result(title.trim(), found.toList())
     }
 
-    fun download(url: String, referer: String?): ByteArray? = runCatching { get(url, referer) }.getOrNull()
+    /** Resmi indirir; bağlantı anlık koparsa 3 kez dener. Yine olmazsa null. */
+    fun download(url: String, referer: String?): ByteArray? {
+        repeat(3) { attempt ->
+            runCatching { return get(url, referer) }
+            if (attempt < 2) Thread.sleep(1500L * (attempt + 1))
+        }
+        return null
+    }
 
     private fun get(url: String, referer: String?): ByteArray {
         val b = Request.Builder().url(url)

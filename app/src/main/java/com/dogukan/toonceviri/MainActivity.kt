@@ -1,13 +1,18 @@
 package com.dogukan.toonceviri
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.content.res.Configuration
 import android.graphics.Color as AndroidColor
 import android.graphics.drawable.ColorDrawable
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.activity.SystemBarStyle
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
@@ -172,6 +177,17 @@ fun App(vm: MainViewModel) {
         snack.showSnackbar(m)
         vm.consumeMessage()
     }
+    // İlk çeviri başlarken bildirim izni iste (Android 13+): ilerleme bildirim çubuğunda görünsün
+    val notifPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
+    val ctx = LocalContext.current
+    LaunchedEffect(state.work != null) {
+        if (state.work == null || Build.VERSION.SDK_INT < 33 || vm.settings.askedNotifications) return@LaunchedEffect
+        val granted = ContextCompat.checkSelfPermission(ctx, Manifest.permission.POST_NOTIFICATIONS) ==
+            PackageManager.PERMISSION_GRANTED
+        vm.settings.askedNotifications = true
+        if (!granted) notifPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
+    }
+
     // Çeviri sürerken ekran kapanmasın
     val view = LocalView.current
     val working = state.work != null

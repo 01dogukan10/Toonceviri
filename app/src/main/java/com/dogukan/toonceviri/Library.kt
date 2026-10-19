@@ -32,6 +32,11 @@ data class Chapter(
     val cbz: String? = null,
     /** Kullanıcının verdiği kategori (ör. seri adı); boşsa kategorisiz */
     val category: String? = null,
+    /**
+     * 0.16+: sayfa numarası = kaynaktaki resmin sırası (atlanan resimler numara boşluğu bırakır).
+     * Eski yarım bölümler devam ettirilirken baştan çevrilir, çünkü numaraları farklı hesaplanmıştı.
+     */
+    val stableIndex: Boolean = false,
 ) {
     /** Sayfa numaraları sırayla (her sayfa birden çok parçadan oluşabilir). */
     val pages: List<Int>
@@ -83,6 +88,7 @@ class Library(private val root: File) {
             } ?: emptyMap(),
             cbz = j.optString("cbz").ifBlank { null },
             category = j.optString("category").trim().ifBlank { null },
+            stableIndex = j.optBoolean("stableIndex"),
         )
     }.getOrNull()
 
@@ -101,6 +107,7 @@ class Library(private val root: File) {
             .put("ratios", JSONObject().also { r -> c.ratios.forEach { (k, v) -> r.put(k, v.toDouble()) } })
             .put("cbz", c.cbz ?: "")
             .put("category", c.category ?: "")
+            .put("stableIndex", c.stableIndex)
         val tmp = File(d, "meta.json.tmp")
         tmp.writeText(j.toString())
         tmp.renameTo(File(d, "meta.json"))
@@ -114,8 +121,11 @@ class Library(private val root: File) {
      * Resmi en fazla 3000 px yüksekliğinde parçalara bölüp JPEG olarak kaydeder.
      * Çok uzun webtoon şeritleri tek parça olursa telefon çizemiyor.
      */
-    fun savePieces(id: String, prefix: String, page: Int, bmp: Bitmap): List<Pair<String, Float>> {
-        dir(id).mkdirs()
+    fun savePieces(id: String, prefix: String, page: Int, bmp: Bitmap): List<Pair<String, Float>> =
+        savePiecesIn(dir(id), prefix, page, bmp)
+
+    fun savePiecesIn(target: File, prefix: String, page: Int, bmp: Bitmap): List<Pair<String, Float>> {
+        target.mkdirs()
         val names = mutableListOf<Pair<String, Float>>()
         val maxH = 3000
         var y = 0
@@ -124,7 +134,7 @@ class Library(private val root: File) {
             val h = min(maxH, bmp.height - y)
             val piece = if (y == 0 && h == bmp.height) bmp else Bitmap.createBitmap(bmp, 0, y, bmp.width, h)
             val name = String.format(Locale.US, "%s_%03d_%02d.jpg", prefix, page, part)
-            FileOutputStream(File(dir(id), name)).use { piece.compress(Bitmap.CompressFormat.JPEG, 90, it) }
+            FileOutputStream(File(target, name)).use { piece.compress(Bitmap.CompressFormat.JPEG, 90, it) }
             if (piece !== bmp) piece.recycle()
             names += name to (bmp.width.toFloat() / h)
             y += h
@@ -151,21 +161,29 @@ class Library(private val root: File) {
             while (dir.findFile(n) != null) n = "$base (${k++}).cbz"
             n
         }
-        dir.findFile(name)?.delete()
-        val f = dir.createFile("application/octet-stream", name)
+        // Önce geçici dosyaya yaz; yazma yarıda kalırsa eski CBZ bozulmadan kalır
+        val tmpName = "$name.yaziliyor"
+        dir.findFile(tmpName)?.delete()
+        val tmp = dir.createFile("application/octet-stream", tmpName)
             ?: throw IllegalStateException("CBZ dosyası oluşturulamadı")
-        val out = ctx.contentResolver.openOutputStream(f.uri)
-            ?: throw IllegalStateException("CBZ dosyası açılamadı")
-        ZipOutputStream(BufferedOutputStream(out)).use { zip ->
-            // JPEG zaten sıkıştırılmış; tekrar sıkıştırmak sadece yavaşlatır
-            zip.setLevel(0)
-            c.translated.forEachIndexed { i, n ->
-                zip.putNextEntry(ZipEntry(String.format(Locale.US, "%04d.jpg", i + 1)))
-                file(c.id, n).inputStream().use { it.copyTo(zip) }
-                zip.closeEntry()
+        try {
+            val out = ctx.contentResolver.openOutputStream(tmp.uri)
+                ?: throw IllegalStateException("CBZ dosyası açılamadı")
+            ZipOutputStream(BufferedOutputStream(out)).use { zip ->
+                // JPEG zaten sıkıştırılmış; tekrar sıkıştırmak sadece yavaşlatır
+                zip.setLevel(0)
+                c.translated.forEachIndexed { i, n ->
+                    zip.putNextEntry(ZipEntry(String.format(Locale.US, "%04d.jpg", i + 1)))
+                    file(c.id, n).inputStream().use { it.copyTo(zip) }
+                    zip.closeEntry()
+                }
             }
+        } catch (e: Exception) {
+            tmp.delete()
+            throw e
         }
-        return f.name ?: name
+        dir.findFile(name)?.delete()
+        return if (tmp.renameTo(name)) tmp.name ?: name else tmp.name ?: tmpName
     }
 
     /** Seçilen klasördeki eski CBZ dosyasını siler (başlık ya da dil değişince yenisi yazılır). */
@@ -177,9 +195,49 @@ class Library(private val root: File) {
 
     private fun bubbleFile(id: String, page: Int) = File(dir(id), String.format(Locale.US, "b_%03d.json", page))
 
-    fun saveBubbles(id: String, page: Int, bubbles: List<BubbleData>, width: Int, height: Int) {
-        dir(id).mkdirs()
-        bubbleFile(id, page).writeText(BubbleData.listToJson(bubbles, width, height))
+    fun saveBubbles(id: String, page: Int, bubbles: List<BubbleData>, width: Int, height: Int) =
+        saveBubblesIn(dir(id), page, bubbles, width, height)
+
+    fun saveBubblesIn(target: File, page: Int, bubbles: List<BubbleData>, width: Int, height: Int) {
+        target.mkdirs()
+        File(target, String.format(Locale.US, "b_%03d.json", page))
+            .writeText(BubbleData.listToJson(bubbles, width, height))
+    }
+
+    /** Yeniden çeviri buraya yazılır; bitince [applyStaging] ile asıl dosyaların yerine geçer. */
+    fun staging(id: String) = File(dir(id), "yeniden")
+
+    fun clearStaging(id: String) {
+        staging(id).deleteRecursively()
+    }
+
+    /** Yarım kalmış bir bölümün sayfa dosyalarını siler (baştan çevirmek için). */
+    fun clearPages(c: Chapter): Chapter {
+        dir(c.id).listFiles()?.filter { pageOf(it.name) != null }?.forEach { it.delete() }
+        return c.copy(original = emptyList(), translated = emptyList(), ratios = emptyMap())
+    }
+
+    /**
+     * Yeniden çevrilen sayfaları asıl klasöre taşır. Yeniden çevrilemeyen sayfaların (orijinali eksik)
+     * eski çevirisi korunur.
+     */
+    fun applyStaging(c: Chapter, src: String, tgt: String, newRatios: Map<String, Float>): Chapter {
+        val st = staging(c.id)
+        val fresh = st.listFiles()?.toList() ?: emptyList()
+        val donePages = fresh.mapNotNull { pageOf(it.name) }.toSet()
+        // Yeniden çevrilen sayfaların eski çeviri ve balon dosyalarını sil
+        val oldT = c.translated.filter { pageOf(it) in donePages }
+        oldT.forEach { file(c.id, it).delete() }
+        donePages.forEach { File(dir(c.id), String.format(Locale.US, "b_%03d.json", it)).delete() }
+        fresh.forEach { it.renameTo(File(dir(c.id), it.name)) }
+        st.deleteRecursively()
+        val newT = fresh.map { it.name }.filter { it.startsWith("t_") }
+        return c.copy(
+            src = src,
+            tgt = tgt,
+            translated = (c.translated - oldT.toSet() + newT).distinct().sorted(),
+            ratios = (c.ratios - oldT.toSet()) + newRatios,
+        )
     }
 
     /** Sayfanın balon bilgisi; 0.15'ten önce çevrilen sayfalarda yoktur (null). */

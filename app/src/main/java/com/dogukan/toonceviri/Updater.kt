@@ -2,12 +2,14 @@ package com.dogukan.toonceviri
 
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
 import android.net.Uri
 import android.os.Build
 import android.provider.Settings
 import androidx.core.content.FileProvider
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 import java.io.IOException
@@ -33,16 +35,18 @@ class Updater(private val ctx: Context, private val http: OkHttpClient) {
         ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName
     }.getOrNull() ?: "0"
 
-    private fun getJson(url: String): JSONObject {
+    private fun getText(url: String): String {
         val req = Request.Builder().url(url)
             .header("Accept", "application/vnd.github+json")
             .header("User-Agent", "ToonCeviri")
             .build()
         http.newCall(req).execute().use { r ->
             if (!r.isSuccessful) throw IOException("HTTP ${r.code}")
-            return JSONObject(r.body?.string() ?: throw IOException("Boş yanıt"))
+            return r.body?.string() ?: throw IOException("Boş yanıt")
         }
     }
+
+    private fun getJson(url: String): JSONObject = JSONObject(getText(url))
 
     private fun parse(j: JSONObject): UpdateInfo? {
         val version = j.optString("tag_name").removePrefix("v").trim()
@@ -61,15 +65,46 @@ class Updater(private val ctx: Context, private val http: OkHttpClient) {
         return null
     }
 
-    /** En son sürüm bu sürümden yeniyse onu döndürür. */
+    /**
+     * En son sürüm bu sürümden yeniyse onu döndürür.
+     * Aradaki sürümler atlandıysa (ör. 0.13 → 0.15) hepsinin notu birlikte verilir.
+     */
     fun checkLatest(): UpdateInfo? {
         val info = parse(getJson("$API/releases/latest")) ?: return null
-        return if (isNewer(info.version, currentVersion)) info else null
+        if (!isNewer(info.version, currentVersion)) return null
+        val all = notesBetween(currentVersion, info.version)
+        return if (all != null) info.copy(notes = all) else info
     }
 
-    /** Belirli bir sürümün değişiklik notu (güncellemeden sonra göstermek için). */
-    fun notesFor(version: String): String? =
-        runCatching { getJson("$API/releases/tags/v$version").optString("body") }.getOrNull()?.ifBlank { null }
+    /**
+     * [from]'dan sonraki (hariç) ve [to]'ya kadar (dahil) tüm sürümlerin notları, yeniden eskiye.
+     * [from] null ise yalnızca [to]'nun notu.
+     */
+    fun notesBetween(from: String?, to: String): String? = runCatching {
+        val arr = JSONArray(getText("$API/releases?per_page=50"))
+        val picked = (0 until arr.length()).map { arr.getJSONObject(it) }
+            .filter { !it.optBoolean("draft") && !it.optBoolean("prerelease") }
+            .map { it.optString("tag_name").removePrefix("v").trim() to it.optString("body").trim() }
+            .filter { (v, body) ->
+                body.isNotEmpty() && !isNewer(v, to) &&
+                    (if (from == null) v == to else isNewer(v, from))
+            }
+            .sortedWith { a, b -> if (isNewer(a.first, b.first)) -1 else if (isNewer(b.first, a.first)) 1 else 0 }
+        picked.joinToString("\n\n") { it.second }.ifBlank { null }
+    }.getOrNull()
+
+    /** Kurulmuş ya da eskimiş güncelleme dosyalarını siler (~56 MB yer açar). */
+    fun cleanup() {
+        dir.listFiles()?.forEach { f ->
+            val v = f.name.removePrefix("ToonCeviri-v").substringBefore(".apk")
+            if (!isNewer(v, currentVersion)) f.delete()
+        }
+    }
+
+    /** Ücretli/kotalı bağlantıda mı (mobil veri ya da paylaşılan erişim noktası)? */
+    fun isMetered(): Boolean = runCatching {
+        (ctx.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager).isActiveNetworkMetered
+    }.getOrDefault(true)
 
     /** APK'yı indirir; daha önce tamamen indirildiyse tekrar indirmez. */
     fun download(info: UpdateInfo, onProgress: (Float) -> Unit): File {

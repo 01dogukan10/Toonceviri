@@ -31,9 +31,12 @@ import androidx.compose.ui.unit.dp
 
 /** Release notundaki basit Markdown'ı (##, **kalın**, - madde) okunur metne çevirir. */
 private fun notesToText(md: String): AnnotatedString = buildAnnotatedString {
-    val lines = md.replace("\r", "").lines().map { it.trimEnd() }.toMutableList()
-    // Sürüm adı pencere başlığında zaten var: ilk satır başlıksa atla
-    if (lines.firstOrNull()?.startsWith("#") == true) lines.removeAt(0)
+    // ` işaretleri (kod biçimi) düz metinde gereksiz
+    val lines = md.replace("\r", "").replace("`", "").lines().map { it.trimEnd() }.toMutableList()
+    // Tek sürümün notuysa sürüm adı pencere başlığında zaten var: ilk başlığı atla.
+    // Birden çok sürümün notu birlikteyse (sürüm atlandıysa) başlıklar kalır, hangi notun hangi sürüme ait olduğu görünsün.
+    val versionHeadings = lines.count { it.startsWith("## ") }
+    if (versionHeadings <= 1 && lines.firstOrNull()?.startsWith("#") == true) lines.removeAt(0)
     while (lines.firstOrNull()?.isBlank() == true) lines.removeAt(0)
     while (lines.lastOrNull()?.isBlank() == true) lines.removeAt(lines.lastIndex)
 
